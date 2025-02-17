@@ -1,0 +1,20 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+# Copy project files
+COPY src/ ./src/
+COPY tests/ ./tests/
+COPY wait_for_services.py .
+COPY .coveragerc .
+
+# Set Python path
+ENV PYTHONPATH=/app
+
+# Wait for services then run tests
+CMD ["sh", "-c", "python wait_for_services.py && pytest tests/test_pipeline.py -v --cov=src --cov-report=term-missing | tee /app/logs/test.log"]

@@ -1,0 +1,10 @@
+.pytest_cache/
+htmlcov/
+logs/
+data/
+.coverage
+.coveragerc
+pytest.ini
+.logs/
+*.log
+__pycache__/
