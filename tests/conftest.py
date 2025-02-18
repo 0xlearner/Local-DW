@@ -1,7 +1,7 @@
 import asyncio
 from typing import AsyncGenerator
 import pytest
-import pandas as pd
+import polars as pl
 import gzip
 import os
 from minio import Minio
@@ -68,20 +68,22 @@ def minio_client(test_config):
 
 @pytest.fixture(scope="function")
 def sample_csv_data():
+    current_time = datetime.now()
     # Create sample data with various data types
     data = {
         "id": range(1, 101),
         "name": [f"User {i}" for i in range(1, 101)],
         "email": [f"user{i}@example.com" for i in range(1, 101)],
         "age": [i % 50 + 20 for i in range(1, 101)],
-        "created_at": [datetime.now().isoformat() for _ in range(100)],
+        # Format datetime as ISO string - it will be converted back in load_data
+        "created_at": [current_time.isoformat() for _ in range(100)],
         "is_active": [i % 2 == 0 for i in range(1, 101)],
         "tags": [
             json.dumps([f"tag{j}" for j in range(i % 3 + 1)]) for i in range(1, 101)
         ],
-        "scores": [f"{{{i},{i+1},{i+2}}}" for i in range(1, 101)],  # Array type
+        "scores": [json.dumps([i, i + 1, i + 2]) for i in range(1, 101)],
     }
-    df = pd.DataFrame(data)
+    df = pl.DataFrame(data)
     return df
 
 
@@ -89,7 +91,7 @@ def sample_csv_data():
 def compressed_csv_file(sample_csv_data, tmp_path):
     # Create CSV file
     csv_path = tmp_path / "test_data.csv"
-    sample_csv_data.to_csv(csv_path, index=False)
+    sample_csv_data.write_csv(csv_path)
 
     # Compress with gzip
     gz_path = tmp_path / "test_data.csv.gz"

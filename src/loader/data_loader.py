@@ -1,9 +1,11 @@
+import ast
 import uuid
 import asyncpg
 import polars as pl
 from typing import List, Dict, Any
 from io import StringIO
 import json
+from datetime import datetime
 from src.config import Config
 from src.logger import setup_logger
 from src.recover.recovery_manager import RecoveryManager
@@ -24,6 +26,7 @@ class DataLoader:
         self.metadata_tracker = metadata_tracker
         self.recovery_manager = recovery_manager
         self._pool = None
+        self.schema = {}  # Will be populated during load_data
 
     async def initialize(self):
         """Initialize connection pool"""
@@ -48,34 +51,6 @@ class DataLoader:
             await self._pool.close()
             self._pool = None
 
-    async def upsert_batch(
-        self,
-        conn: asyncpg.Connection,
-        table_name: str,
-        data: List[Dict[str, Any]],
-        primary_key: str,
-    ) -> None:
-        try:
-            columns = list(data[0].keys())
-            values = [tuple(row[col] for col in columns) for row in data]
-
-            # Generate the upsert query
-            set_statements = [
-                f"{col} = EXCLUDED.{col}" for col in columns if col != primary_key
-            ]
-
-            query = f"""
-                INSERT INTO {table_name} ({', '.join(columns)})
-                VALUES ($1{', '.join(f'${i}' for i in range(2, len(columns) + 1))})
-                ON CONFLICT ({primary_key})
-                DO UPDATE SET {', '.join(set_statements)}
-                """
-
-            await conn.executemany(query, values)
-        except Exception as e:
-            logger.error(f"Error upserting batch: {str(e)}")
-            raise
-
     async def _compare_and_track_changes(
         self,
         conn: asyncpg.Connection,
@@ -85,19 +60,33 @@ class DataLoader:
         batch_id: str,
         file_name: str,
     ):
+        logger.info(
+            f"Starting change tracking for {table_name}, primary_key={new_data[primary_key]}, batch_id={batch_id}"
+        )
         # Fetch existing record
         existing_record = await conn.fetchrow(
             f"""
             SELECT * FROM {table_name}
             WHERE {primary_key} = $1
-        """,
+            FOR UPDATE
+            """,
             new_data[primary_key],
         )
 
         if existing_record is None:
-            # Track insert
+            logger.info(
+                f"Recording INSERT for {table_name}, primary_key={new_data[primary_key]}"
+            )
+            # Track insert - do it for each column
             for column, value in new_data.items():
-                await self.metadata_tracker.record_change(
+                await conn.execute(
+                    """
+                    INSERT INTO change_history (
+                        table_name, primary_key_column, primary_key_value,
+                        column_name, old_value, new_value, change_type,
+                        file_name, batch_id
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                    """,
                     table_name,
                     primary_key,
                     str(new_data[primary_key]),
@@ -109,12 +98,24 @@ class DataLoader:
                     batch_id,
                 )
         else:
-            # Track updates
+            # Convert record to dictionary for comparison
             existing_dict = dict(existing_record)
+            updates_found = False
+
             for column, new_value in new_data.items():
                 old_value = existing_dict.get(column)
-                if old_value != new_value:
-                    await self.metadata_tracker.record_change(
+                if str(old_value) != str(
+                    new_value
+                ):  # Convert both to string for comparison
+                    updates_found = True
+                    await conn.execute(
+                        """
+                        INSERT INTO change_history (
+                            table_name, primary_key_column, primary_key_value,
+                            column_name, old_value, new_value, change_type,
+                            file_name, batch_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        """,
                         table_name,
                         primary_key,
                         str(new_data[primary_key]),
@@ -125,6 +126,209 @@ class DataLoader:
                         file_name,
                         batch_id,
                     )
+
+            if updates_found:
+                logger.info(
+                    f"Recording UPDATE for {table_name}, primary_key={new_data[primary_key]}"
+                )
+
+    @staticmethod
+    def _format_value(value: Any, col_name: str, schema: Dict[str, str]) -> Any:
+        """Format value according to column type"""
+        if value is None:
+            return None
+
+        pg_type = schema[col_name].upper()
+
+        # Handle timestamp/date types
+        if any(type_name in pg_type for type_name in ["TIMESTAMP", "DATE", "TIME"]):
+            if isinstance(value, str):
+                try:
+                    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+                except ValueError as e:
+                    logger.error(
+                        f"Error parsing timestamp for {col_name}: {value} - {str(e)}"
+                    )
+                    raise
+
+        # Handle JSON/JSONB type
+        if any(json_type in pg_type for json_type in ["JSON", "JSONB"]):
+            if isinstance(value, str):
+                try:
+                    # Validate JSON string
+                    json.loads(value)
+                    return value
+                except json.JSONDecodeError:
+                    return json.dumps(value)
+            return json.dumps(value)
+
+        return value
+
+    def _serialize_row(self, row: Dict[str, Any]) -> Dict[str, str]:
+        """Convert row values to JSON-serializable format"""
+        serialized = {}
+        for key, value in row.items():
+            if isinstance(value, datetime):
+                serialized[key] = value.isoformat()
+            else:
+                serialized[key] = value
+        return serialized
+
+    async def load_batch(
+        self,
+        conn,
+        table_name: str,
+        data: List[Dict],
+        primary_key: str,
+        batch_id: str,
+        file_name: str,
+    ):
+        try:
+            columns = list(data[0].keys())
+            processed_data = []
+
+            # Process the data first
+            for row in data:
+                processed_row = {}
+                for col, val in row.items():
+                    if col not in self.schema:
+                        logger.warning(f"Column {col} not found in schema")
+                        processed_row[col] = val
+                        continue
+
+                    col_type = self.schema[col].upper()
+                    logger.debug(f"Processing column {col} with type {col_type}")
+
+                    # Handle timestamp/datetime columns
+                    if "TIMESTAMP" in col_type:
+                        if isinstance(val, str):
+                            try:
+                                processed_row[col] = datetime.fromisoformat(
+                                    val.replace("Z", "+00:00")
+                                )
+                            except ValueError as e:
+                                logger.error(f"Failed to parse datetime: {val}")
+                                raise ValueError(
+                                    f"Invalid datetime format: {val}"
+                                ) from e
+                        else:
+                            processed_row[col] = val
+                    # Handle JSON/JSONB columns
+                    elif "JSON" in col_type:
+                        if isinstance(val, str):
+                            try:
+                                json.loads(val)
+                                processed_row[col] = val
+                            except json.JSONDecodeError:
+                                processed_row[col] = json.dumps(val)
+                        else:
+                            processed_row[col] = json.dumps(val)
+                    else:
+                        processed_row[col] = val
+
+                processed_data.append(processed_row)
+
+            # Track changes before UPSERT
+            for row in processed_data:
+                # Check if record exists
+                existing = await conn.fetchrow(
+                    f"""
+                    SELECT * FROM {table_name}
+                    WHERE {primary_key} = $1
+                    """,
+                    row[primary_key],
+                )
+
+                if existing is None:
+                    logger.info(
+                        f"Recording INSERT for {table_name}, primary_key={row[primary_key]}"
+                    )
+                    # Single INSERT record for the whole row
+                    await conn.execute(
+                        """
+                        INSERT INTO change_history (
+                            table_name, primary_key_column, primary_key_value,
+                            column_name, old_value, new_value, change_type,
+                            file_name, batch_id
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                        """,
+                        table_name,
+                        primary_key,
+                        str(row[primary_key]),
+                        "*",  # Use '*' to indicate all columns
+                        None,
+                        json.dumps(
+                            self._serialize_row(row)
+                        ),  # Serialize row before JSON conversion
+                        "INSERT",
+                        file_name,
+                        batch_id,
+                    )
+                else:
+                    # Handle updates
+                    existing_dict = dict(existing)
+                    updates = {}
+
+                    for column, new_value in row.items():
+                        old_value = existing_dict.get(column)
+                        if str(old_value) != str(new_value):
+                            updates[column] = {
+                                "old": str(old_value),
+                                "new": str(new_value),
+                            }
+
+                    if updates:
+                        logger.info(
+                            f"Recording UPDATE for {table_name}, primary_key={row[primary_key]}"
+                        )
+                        await conn.execute(
+                            """
+                            INSERT INTO change_history (
+                                table_name, primary_key_column, primary_key_value,
+                                column_name, old_value, new_value, change_type,
+                                file_name, batch_id
+                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                            """,
+                            table_name,
+                            primary_key,
+                            str(row[primary_key]),
+                            "*",  # Use '*' to indicate all columns
+                            json.dumps(
+                                self._serialize_row(existing_dict)
+                            ),  # Serialize existing row
+                            json.dumps(updates),  # Updates are already strings
+                            "UPDATE",
+                            file_name,
+                            batch_id,
+                        )
+
+            # Now perform the UPSERT
+            values = [tuple(row[col] for col in columns) for row in processed_data]
+            param_placeholders = [f"${i+1}" for i in range(len(columns))]
+            set_statements = [
+                f"{col} = EXCLUDED.{col}" for col in columns if col != primary_key
+            ]
+
+            query = f"""
+                INSERT INTO {table_name} ({', '.join(columns)})
+                VALUES ({', '.join(param_placeholders)})
+                ON CONFLICT ({primary_key})
+                DO UPDATE SET {', '.join(set_statements)}
+            """
+
+            logger.debug(f"Executing query with first row: {values[0]}")
+            await conn.executemany(query, values)
+
+        except Exception as e:
+            logger.error(f"Error upserting batch: {str(e)}")
+            if "values" in locals():
+                logger.error(f"Failed values (first row): {values[0]}")
+                logger.error(f"Schema types for failed row:")
+                for col, val in zip(columns, values[0]):
+                    logger.error(
+                        f"Column: {col}, Value: {val}, Type: {type(val)}, Schema Type: {self.schema.get(col, 'UNKNOWN')}"
+                    )
+            raise
 
     async def load_data(
         self,
@@ -139,6 +343,9 @@ class DataLoader:
             f"Starting load_data for table {table_name} with batch_id {batch_id}"
         )
 
+        # Store schema for use in load_batch
+        self.schema = schema
+
         try:
             # Convert string data to StringIO for Polars to read
             csv_buffer = StringIO(csv_data)
@@ -147,161 +354,47 @@ class DataLoader:
             if df.is_empty():
                 raise ValueError(f"No data found in CSV content from {file_name}")
 
+            # Convert DataFrame to list of dictionaries
             records = df.to_dicts()
-            logger.info(f"Successfully read {len(records)} records from CSV data")
 
-            # Create recovery point
-            checkpoint_data = {
-                "total_records": len(records),
-                "schema": schema,
-                "processed_records": 0,
-            }
-            await self.recovery_manager.create_recovery_point(
-                table_name, file_name, checkpoint_data
-            )
-
-            async with await self.connect() as conn:
-                async with conn.transaction():
-                    # Start merge history record
-                    await conn.execute(
-                        """
-                        INSERT INTO merge_history (
-                            table_name, file_name, started_at,
-                            status, batch_id
-                        ) VALUES ($1, $2, CURRENT_TIMESTAMP, 'IN_PROGRESS', $3)
-                    """,
-                        table_name,
-                        file_name,
-                        batch_id,
-                    )
-
-                    rows_inserted = 0
-                    rows_updated = 0
-
-                    # Process data in batches
-                    logger.info(
-                        f"Processing {len(records)} records in batches of {self.batch_size}"
-                    )
-                    for i in range(0, len(records), self.batch_size):
-                        batch = records[i : i + self.batch_size]
-                        logger.debug(
-                            f"Processing batch {i//self.batch_size + 1} with {len(batch)} records"
-                        )
-
-                        # Process each record to handle array types
-                        processed_batch = []
-                        for record in batch:
-                            processed_record = {}
-                            for col, value in record.items():
-                                if schema[col].endswith("[]"):
-                                    # Handle array string representations
-                                    if isinstance(value, str):
-                                        if value.startswith("{") and value.endswith(
-                                            "}"
-                                        ):
-                                            # PostgreSQL array format
-                                            value = (
-                                                value[1:-1].split(",")
-                                                if value != "{}"
-                                                else []
-                                            )
-                                        elif value.startswith("[") and value.endswith(
-                                            "]"
-                                        ):
-                                            # JSON array format
-                                            value = json.loads(value)
-                                        else:
-                                            # Single value to array
-                                            value = [value] if value else []
-                                    elif not isinstance(value, list):
-                                        value = [value] if value is not None else []
-                                processed_record[col] = value
-                            processed_batch.append(processed_record)
-
-                        # Track changes before update
-                        for record in processed_batch:
-                            await self._compare_and_track_changes(
-                                conn,
-                                table_name,
-                                primary_key,
-                                record,
-                                batch_id,
-                                file_name,
+            # Format values according to schema
+            formatted_records = []
+            for record in records:
+                formatted_record = {}
+                for col_name, value in record.items():
+                    if col_name in schema:
+                        pg_type = schema[col_name].upper()
+                        if "TIMESTAMP" in pg_type and isinstance(value, str):
+                            # Convert timestamp strings to datetime objects
+                            formatted_record[col_name] = datetime.fromisoformat(
+                                value.replace("Z", "+00:00")
                             )
+                        else:
+                            formatted_record[col_name] = self._format_value(
+                                value, col_name, schema
+                            )
+                    else:
+                        formatted_record[col_name] = value
+                formatted_records.append(formatted_record)
 
-                        # Prepare the upsert query
-                        columns = list(schema.keys())
-                        placeholders = [f"${i+1}" for i in range(len(columns))]
-                        non_pk_columns = [col for col in columns if col != primary_key]
-                        update_stmt = ", ".join(
-                            f"{col} = EXCLUDED.{col}" for col in non_pk_columns
-                        )
-
-                        query = f"""
-                            INSERT INTO {table_name} ({', '.join(columns)})
-                            VALUES ({', '.join(placeholders)})
-                            ON CONFLICT ({primary_key})
-                            DO UPDATE SET {update_stmt}
-                            RETURNING 
-                                CASE WHEN xmax::text::int > 0 THEN 1 ELSE 0 END as updated,
-                                CASE WHEN xmax = 0 THEN 1 ELSE 0 END as inserted
-                        """
-
-                        # Execute for each record in the batch
-                        for record in processed_batch:
-                            values = []
-                            for col in columns:
-                                value = record[col]
-                                if schema[col].endswith("[]"):
-                                    # Convert Python list to PostgreSQL array
-                                    value = (
-                                        value
-                                        if isinstance(value, list)
-                                        else [value] if value is not None else []
-                                    )
-                                values.append(value)
-
-                            result = await conn.fetch(query, *values)
-                            for row in result:
-                                rows_updated += row["updated"]
-                                rows_inserted += row["inserted"]
-
-                        # Update recovery point
-                        checkpoint_data["processed_records"] = i + len(batch)
-                        await self.recovery_manager.update_recovery_status(
-                            batch_id, "PROCESSED"
-                        )
-                        logger.debug(
-                            f"Completed batch with {len(batch)} records. Total: {rows_inserted} inserted, {rows_updated} updated"
-                        )
-
-                    # Update merge history
-                    await conn.execute(
-                        """
-                        UPDATE merge_history
-                        SET completed_at = CURRENT_TIMESTAMP,
-                            status = 'COMPLETED',
-                            rows_inserted = $1,
-                            rows_updated = $2
-                        WHERE batch_id = $3
-                    """,
-                        rows_inserted,
-                        rows_updated,
+            # Process in batches
+            batch_size = self.batch_size
+            for i in range(0, len(formatted_records), batch_size):
+                batch = formatted_records[i : i + batch_size]
+                async with self._pool.acquire() as conn:
+                    await self.load_batch(
+                        conn,
+                        table_name,
+                        batch,
+                        primary_key,
                         batch_id,
+                        file_name,
                     )
 
-                    # Update table metadata
-                    await self.metadata_tracker.update_table_metadata(
-                        table_name, file_name, len(records), schema
-                    )
-
-                    logger.info(
-                        f"Successfully loaded data: {rows_inserted} rows inserted, {rows_updated} rows updated"
-                    )
+            logger.info(
+                f"Successfully loaded {len(formatted_records)} records into {table_name}"
+            )
 
         except Exception as e:
-            logger.error(f"Error loading data: {str(e)}", exc_info=True)
-            await self.recovery_manager.update_recovery_status(
-                batch_id, "FAILED", str(e)
-            )
+            logger.error(f"Error loading data: {str(e)}")
             raise

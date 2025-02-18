@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from datetime import datetime
 import hashlib
 import json
@@ -68,8 +69,9 @@ class Pipeline:
         self._initialized = True
 
     async def initialize_tracking_tables(self):
-        await self.metrics_tracker.initialize_metrics_table()
-        await self.file_tracker.initialize_tracking_table()
+        async with self._pool.acquire() as conn:
+            await self.metrics_tracker.initialize_metrics_table()
+            await self.file_tracker.initialize_tracking_table(conn)
 
     def _get_table_name(self, file_name: str) -> str:
         # Extract base name from file path and remove extensions
@@ -129,6 +131,18 @@ class Pipeline:
             schema = self.schema_inferrer.infer_schema(schema_buffer.read())
             logger.debug(f"Inferred schema: {schema}")
 
+            # Add debug logging for timestamp columns
+            timestamp_cols = [
+                col
+                for col, type_info in schema.items()
+                if "TIMESTAMP" in type_info.upper()
+            ]
+            logger.debug(f"Timestamp columns: {timestamp_cols}")
+
+            if "created_at" in df.columns:
+                sample_dates = df["created_at"].head(5)
+                logger.debug(f"Sample created_at values: {sample_dates}")
+
             if not self.data_validator.validate_data(df, schema):
                 validation_errors = json.dumps(self.data_validator.validation_errors)
                 logger.error(
@@ -156,6 +170,9 @@ class Pipeline:
                 logger.info(
                     f"Successfully loaded {metrics.rows_processed} rows into {metrics.table_name}"
                 )
+
+            # Update metrics with the number of inserts
+            metrics.rows_inserted = metrics.rows_processed
 
             # Update metrics and mark file as processed
             metrics.end_time = datetime.now()

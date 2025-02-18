@@ -7,22 +7,23 @@ class FileTracker:
     def __init__(self, conn_params: Dict[str, Any]):
         self.conn_params = conn_params
 
-    async def initialize_tracking_table(self):
-        async with asyncpg.create_pool(**self.conn_params) as pool:
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS processed_files (
-                        id SERIAL PRIMARY KEY,
-                        file_name TEXT NOT NULL UNIQUE,
-                        processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        file_hash TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        error_message TEXT,
-                        rows_processed INTEGER DEFAULT 0
-                    )
-                """
-                )
+    async def initialize_tracking_table(self, conn: asyncpg.Connection) -> None:
+        """Initialize the file tracking table."""
+        await conn.execute(
+            """
+            DROP TABLE IF EXISTS processed_files;
+            CREATE TABLE processed_files (
+                id SERIAL PRIMARY KEY,
+                file_name VARCHAR(255) NOT NULL,
+                file_hash VARCHAR(64),
+                status VARCHAR(20),
+                rows_processed INTEGER,
+                error_message TEXT,
+                processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                CONSTRAINT processed_files_file_name_key UNIQUE (file_name)
+            );
+        """
+        )
 
     async def is_file_processed(self, file_name: str, file_hash: str) -> bool:
         async with asyncpg.create_pool(**self.conn_params) as pool:

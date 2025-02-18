@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 import polars as pl
 from typing import Dict, Any, List
@@ -45,7 +46,6 @@ class SchemaInferrer:
     @staticmethod
     def infer_schema(csv_data: str) -> Dict[str, Any]:
         try:
-            # Convert string data to StringIO object for Polars to read
             csv_buffer = StringIO(csv_data)
             df = pl.read_csv(csv_buffer)
             schema = {}
@@ -59,8 +59,48 @@ class SchemaInferrer:
                 # Get sample of non-null values for type detection
                 sample_values = pdf[col_name].dropna().head(100).tolist()
 
+                # Check for datetime patterns first
+                if (
+                    col_name.lower().endswith("_at")
+                    or col_name.lower().endswith("_date")
+                    or col_name.lower().endswith("_time")
+                ):
+                    # Try parsing first value as datetime
+                    if sample_values:
+                        try:
+                            if isinstance(sample_values[0], str):
+                                # Check for ISO format (includes T separator)
+                                if "T" in sample_values[0]:
+                                    datetime.fromisoformat(
+                                        sample_values[0].replace("Z", "+00:00")
+                                    )
+                                    pg_type = "TIMESTAMP WITH TIME ZONE"
+                                else:
+                                    # Try other common formats
+                                    for fmt in [
+                                        "%Y-%m-%d %H:%M:%S.%f",
+                                        "%Y-%m-%d %H:%M:%S",
+                                        "%Y-%m-%d",
+                                    ]:
+                                        try:
+                                            datetime.strptime(sample_values[0], fmt)
+                                            pg_type = "TIMESTAMP"
+                                            break
+                                        except ValueError:
+                                            continue
+                                    else:
+                                        pg_type = "TEXT"
+                            else:
+                                pg_type = "TIMESTAMP"
+                            schema[col_name] = pg_type
+                            continue
+                        except (ValueError, TypeError):
+                            pg_type = "TEXT"
+                    else:
+                        pg_type = "TEXT"
+
                 # Check for JSON or array types first
-                if sample_values:
+                elif sample_values:
                     # Check if values are JSON
                     if all(
                         isinstance(v, str) and SchemaInferrer._is_json_string(v)
@@ -106,13 +146,23 @@ class SchemaInferrer:
         primary_key: str,
     ) -> None:
         try:
-            columns = [f"{col} {dtype}" for col, dtype in schema.items()]
-            columns.append(f"CONSTRAINT {table_name}_pkey PRIMARY KEY ({primary_key})")
+            columns = []
+            for column_name, data_type in schema.items():
+                if data_type.upper() == "TEXT[]":
+                    column_def = f"{column_name} TEXT[]"
+                elif data_type.upper() == "JSONB":
+                    column_def = f"{column_name} JSONB"
+                else:
+                    column_def = f"{column_name} {data_type}"
+
+                if column_name == primary_key:
+                    column_def += " PRIMARY KEY"
+                columns.append(column_def)
 
             create_table_query = f"""
-                CREATE TABLE IF NOT EXISTS {table_name} (
-                    {', '.join(columns)}
-                )
+            CREATE TABLE IF NOT EXISTS {table_name} (
+                {','.join(columns)}
+            )
             """
             await conn.execute(create_table_query)
         except Exception as e:

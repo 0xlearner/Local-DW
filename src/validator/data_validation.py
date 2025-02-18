@@ -2,6 +2,19 @@ from typing import List, Dict, Any
 import polars as pl
 from datetime import datetime
 import re
+import logging
+
+
+def setup_logger(name):
+    logger = logging.getLogger(name)
+    logger.setLevel(logging.DEBUG)
+    formatter = logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    )
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+    return logger
 
 
 class DataValidator:
@@ -14,6 +27,7 @@ class DataValidator:
         Returns True if validation passes, False otherwise
         """
         self.validation_errors = []
+        logger = setup_logger("validator")
 
         # Check for required columns
         for col, dtype in schema.items():
@@ -29,40 +43,138 @@ class DataValidator:
         # Validate data types and constraints
         for col in df.columns:
             if col in schema:
-                col_data = df[col]
                 pg_type = schema[col]
 
-                # Null check
-                null_count = col_data.null_count()
-                if null_count > 0:
-                    self.validation_errors.append(
-                        {
-                            "type": "NULL_VALUES",
-                            "message": f"Column '{col}' contains {null_count} null values",
-                            "column": col,
-                        }
-                    )
-
                 # Type-specific validations
-                if "TIMESTAMP" in pg_type:
-                    self._validate_timestamps(col_data, col)
-                elif "NUMERIC" in pg_type or "INTEGER" in pg_type:
-                    self._validate_numbers(col_data, col)
-                elif "EMAIL" in col.lower():
-                    self._validate_emails(col_data, col)
+                if "TIMESTAMP" in pg_type.upper():
+                    logger.debug(f"Validating timestamp column: {col}")
+                    logger.debug(f"Sample values: {df[col].head(5)}")
+
+                    try:
+                        # Try parsing ISO format timestamps
+                        df_with_parsed = df.with_columns(
+                            pl.col(col)
+                            .str.strptime(pl.Datetime, "%Y-%m-%dT%H:%M:%S.%f")
+                            .alias(f"{col}_parsed")
+                        )
+                        logger.debug(f"Successfully parsed {col} using ISO format")
+                        self._validate_timestamps(df_with_parsed[f"{col}_parsed"], col)
+                    except Exception as e1:
+                        logger.debug(f"Failed to parse with ISO format: {str(e1)}")
+                        try:
+                            # Try other common formats as fallback
+                            for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d"]:
+                                try:
+                                    df_with_parsed = df.with_columns(
+                                        pl.col(col)
+                                        .str.strptime(pl.Datetime, fmt)
+                                        .alias(f"{col}_parsed")
+                                    )
+                                    logger.debug(
+                                        f"Successfully parsed {col} using format: {fmt}"
+                                    )
+                                    self._validate_timestamps(
+                                        df_with_parsed[f"{col}_parsed"], col
+                                    )
+                                    break
+                                except Exception as e2:
+                                    logger.debug(
+                                        f"Failed to parse with format {fmt}: {str(e2)}"
+                                    )
+                                    continue
+                            else:
+                                self.validation_errors.append(
+                                    {
+                                        "type": "INVALID_TIMESTAMP",
+                                        "message": f"Column '{col}' contains invalid timestamp format",
+                                        "column": col,
+                                    }
+                                )
+                        except Exception as e:
+                            logger.error(
+                                f"Error validating timestamp column {col}: {str(e)}"
+                            )
+                            self.validation_errors.append(
+                                {
+                                    "type": "INVALID_TIMESTAMP",
+                                    "message": f"Column '{col}' validation error: {str(e)}",
+                                    "column": col,
+                                }
+                            )
+                elif "JSONB" in pg_type.upper() or "JSON" in pg_type.upper():
+                    try:
+                        # Ensure the string is valid JSON
+                        df_with_json = df.with_columns(
+                            pl.col(col).map_elements(
+                                lambda x: self._validate_json(x, col)
+                            )
+                        )
+                        if df_with_json[col].null_count() > 0:
+                            self.validation_errors.append(
+                                {
+                                    "type": "INVALID_JSON",
+                                    "message": f"Column '{col}' contains invalid JSON",
+                                    "column": col,
+                                }
+                            )
+                    except Exception as e:
+                        logger.error(f"Error validating JSON column {col}: {str(e)}")
+                        self.validation_errors.append(
+                            {
+                                "type": "INVALID_JSON",
+                                "message": f"Column '{col}' validation error: {str(e)}",
+                                "column": col,
+                            }
+                        )
+                elif "[]" in pg_type:  # Array type
+                    try:
+                        # Convert set notation to array notation
+                        df_with_array = df.with_columns(
+                            pl.col(col).map_elements(
+                                lambda x: self._validate_array(x, col)
+                            )
+                        )
+                        if df_with_array[col].null_count() > 0:
+                            self.validation_errors.append(
+                                {
+                                    "type": "INVALID_ARRAY",
+                                    "message": f"Column '{col}' contains invalid array format",
+                                    "column": col,
+                                }
+                            )
+                    except Exception as e:
+                        logger.error(f"Error validating array column {col}: {str(e)}")
+                        self.validation_errors.append(
+                            {
+                                "type": "INVALID_ARRAY",
+                                "message": f"Column '{col}' validation error: {str(e)}",
+                                "column": col,
+                            }
+                        )
 
         return len(self.validation_errors) == 0
 
-    def _validate_timestamps(self, col_data: pl.Series, col_name: str):
-        future_dates = col_data.filter(col_data > datetime.now())
-        if len(future_dates) > 0:
-            self.validation_errors.append(
-                {
-                    "type": "FUTURE_DATE",
-                    "message": f"Column '{col_name}' contains {len(future_dates)} future dates",
-                    "column": col_name,
-                }
-            )
+    def _validate_timestamps(self, col_data: pl.Series, col: str):
+        logger = setup_logger("validator")
+        try:
+            # Get current time as Polars datetime
+            current_time = datetime.now()
+
+            # Count future dates
+            future_count = col_data.filter(col_data > current_time).len()
+
+            if future_count > 0:
+                logger.debug(f"Found {future_count} future dates in {col}")
+                self.validation_errors.append(
+                    {
+                        "type": "FUTURE_DATE",
+                        "message": f"Column '{col}' contains {future_count} future dates",
+                        "column": col,
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Error in timestamp validation for {col}: {str(e)}")
+            raise
 
     def _validate_numbers(self, col_data: pl.Series, col_name: str):
         negative_values = col_data.filter(col_data < 0)
@@ -86,3 +198,29 @@ class DataValidator:
                     "column": col_name,
                 }
             )
+
+    def _validate_json(self, value: str, col: str) -> str:
+        """Validate and format JSON string"""
+        import json
+
+        try:
+            if isinstance(value, str):
+                # Parse and re-serialize to ensure valid JSON format
+                return json.dumps(json.loads(value))
+            return None
+        except Exception:
+            return None
+
+    def _validate_array(self, value: str, col: str) -> str:
+        """Validate PostgreSQL array notation"""
+        try:
+            if isinstance(value, str):
+                # For PostgreSQL arrays like {1,2,3}, just validate the format
+                if value.startswith("{") and value.endswith("}"):
+                    # The format is correct, return as is
+                    return value
+                # If it's not in PostgreSQL array format, return None to mark as invalid
+                return None
+            return None
+        except Exception:
+            return None

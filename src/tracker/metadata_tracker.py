@@ -27,13 +27,13 @@ class MetadataTracker:
     async def initialize_metadata_tables(self):
         pool = await self.get_pool()
         async with pool.acquire() as conn:
-            # Table for tracking table-level metadata
+            # First create table if it doesn't exist
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS table_metadata (
                     id SERIAL PRIMARY KEY,
                     table_name TEXT NOT NULL,
-                    last_processed_at TIMESTAMP,
+                    processed_at TIMESTAMP,
                     total_rows INTEGER DEFAULT 0,
                     last_file_processed TEXT,
                     schema_snapshot JSONB,
@@ -43,6 +43,26 @@ class MetadataTracker:
                 )
             """
             )
+
+            # Remove the ALTER TABLE statement since columns are already defined in CREATE TABLE
+            # If you need to add new columns in the future, you can uncomment and modify this block
+            """
+            # Add schema_snapshot column if it doesn't exist
+            await conn.execute(
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 
+                        FROM information_schema.columns 
+                        WHERE table_name = 'table_metadata' 
+                        AND column_name = 'new_column_name'
+                    ) THEN
+                        ALTER TABLE table_metadata 
+                        ADD COLUMN new_column_name NEW_TYPE;
+                    END IF;
+                END $$;
+            )
+            """
 
             # Table for tracking changes to data
             await conn.execute(
@@ -142,11 +162,11 @@ class MetadataTracker:
             await conn.execute(
                 """
                 INSERT INTO table_metadata (
-                    table_name, last_processed_at, total_rows,
+                    table_name, processed_at, total_rows,
                     last_file_processed, schema_snapshot, updated_at
                 ) VALUES ($1, CURRENT_TIMESTAMP, $2, $3, $4, CURRENT_TIMESTAMP)
                 ON CONFLICT (table_name) DO UPDATE SET
-                    last_processed_at = CURRENT_TIMESTAMP,
+                    processed_at = CURRENT_TIMESTAMP,
                     total_rows = EXCLUDED.total_rows,
                     last_file_processed = EXCLUDED.last_file_processed,
                     schema_snapshot = EXCLUDED.schema_snapshot,
