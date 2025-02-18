@@ -1,5 +1,7 @@
 import asyncio
 
+import asyncpg
+
 from src.config import Config
 from src.loader.data_loader import DataLoader
 from src.recover.recovery_manager import RecoveryManager
@@ -17,9 +19,14 @@ class RecoveryWorker:
         self.recovery_manager = recovery_manager
         self.data_loader = data_loader
         self.running = False
+        self._pool = None
+
+    def set_pool(self, pool: asyncpg.Pool):
+        self._pool = pool
 
     async def start(self):
         self.running = True
+
         while self.running:
             try:
                 # Get failed jobs that need retry
@@ -48,23 +55,36 @@ class RecoveryWorker:
                             job["batch_id"], "FAILED", str(e)
                         )
 
+                if not self.running:
+                    break
+
                 # Wait before next check, but make it interruptible
                 try:
-                    await asyncio.sleep(300)  # 5 minutes
+                    await asyncio.sleep(5)  # Reduced sleep time for testing
                 except asyncio.CancelledError:
-                    self.running = False
                     break
 
             except asyncio.CancelledError:
-                self.running = False
                 break
             except Exception as e:
-                logger.error(f"Error in recovery worker: {str(e)}")
-                try:
-                    await asyncio.sleep(60)  # Wait 1 minute on error
-                except asyncio.CancelledError:
-                    self.running = False
-                    break
+                if self.running:
+                    logger.error(f"Error in recovery worker: {str(e)}")
+                    try:
+                        await asyncio.sleep(5)  # Reduced sleep time for testing
+                    except asyncio.CancelledError:
+                        break
 
-    def stop(self):
+        await self.cleanup()
         self.running = False
+
+    async def stop(self):
+        """Stop the worker and cleanup resources"""
+        self.running = False
+        await self.cleanup()
+
+    async def cleanup(self):
+        """Cleanup any resources used by the recovery worker"""
+        logger.debug("Cleaning up recovery worker resources")
+        # Currently no resources to clean up, but method needs to exist
+        # for future resource cleanup implementation
+        pass

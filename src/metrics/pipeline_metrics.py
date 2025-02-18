@@ -22,51 +22,72 @@ class PipelineMetrics:
 class MetricsTracker:
     def __init__(self, conn_params: Dict[str, Any]):
         self.conn_params = conn_params
+        self._pool = None
+
+    def set_pool(self, pool: asyncpg.Pool):
+        """Set the connection pool"""
+        self._pool = pool
 
     async def initialize_metrics_table(self):
-        async with asyncpg.create_pool(**self.conn_params) as pool:
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    CREATE TABLE IF NOT EXISTS pipeline_metrics (
-                        id SERIAL PRIMARY KEY,
-                        file_name TEXT NOT NULL,
-                        table_name TEXT NOT NULL,
-                        start_time TIMESTAMP NOT NULL,
-                        end_time TIMESTAMP,
-                        rows_processed INTEGER DEFAULT 0,
-                        rows_inserted INTEGER DEFAULT 0,
-                        rows_updated INTEGER DEFAULT 0,
-                        rows_failed INTEGER DEFAULT 0,
-                        error_message TEXT,
-                        file_size_bytes BIGINT DEFAULT 0,
-                        processing_status TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                """
-                )
+        if self._pool is None:
+            async with asyncpg.create_pool(**self.conn_params) as pool:
+                async with pool.acquire() as conn:
+                    await self._create_metrics_table(conn)
+        else:
+            async with self._pool.acquire() as conn:
+                await self._create_metrics_table(conn)
+
+    async def _create_metrics_table(self, conn: asyncpg.Connection):
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pipeline_metrics (
+                id SERIAL PRIMARY KEY,
+                file_name TEXT NOT NULL,
+                table_name TEXT NOT NULL,
+                start_time TIMESTAMP NOT NULL,
+                end_time TIMESTAMP,
+                rows_processed INTEGER DEFAULT 0,
+                rows_inserted INTEGER DEFAULT 0,
+                rows_updated INTEGER DEFAULT 0,
+                rows_failed INTEGER DEFAULT 0,
+                error_message TEXT,
+                file_size_bytes BIGINT DEFAULT 0,
+                processing_status TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
 
     async def save_metrics(self, metrics: PipelineMetrics):
-        async with asyncpg.create_pool(**self.conn_params) as pool:
-            async with pool.acquire() as conn:
-                await conn.execute(
-                    """
-                    INSERT INTO pipeline_metrics (
-                        file_name, table_name, start_time, end_time,
-                        rows_processed, rows_inserted, rows_updated,
-                        rows_failed, error_message, file_size_bytes,
-                        processing_status
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-                """,
-                    metrics.file_name,
-                    metrics.table_name,
-                    metrics.start_time,
-                    metrics.end_time,
-                    metrics.rows_processed,
-                    metrics.rows_inserted,
-                    metrics.rows_updated,
-                    metrics.rows_failed,
-                    metrics.error_message,
-                    metrics.file_size_bytes,
-                    metrics.processing_status,
-                )
+        if self._pool is None:
+            async with asyncpg.create_pool(**self.conn_params) as pool:
+                async with pool.acquire() as conn:
+                    await self._save_metrics_to_db(conn, metrics)
+        else:
+            async with self._pool.acquire() as conn:
+                await self._save_metrics_to_db(conn, metrics)
+
+    async def _save_metrics_to_db(
+        self, conn: asyncpg.Connection, metrics: PipelineMetrics
+    ):
+        await conn.execute(
+            """
+            INSERT INTO pipeline_metrics (
+                file_name, table_name, start_time, end_time,
+                rows_processed, rows_inserted, rows_updated,
+                rows_failed, error_message, file_size_bytes,
+                processing_status
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            """,
+            metrics.file_name,
+            metrics.table_name,
+            metrics.start_time,
+            metrics.end_time,
+            metrics.rows_processed,
+            metrics.rows_inserted,
+            metrics.rows_updated,
+            metrics.rows_failed,
+            metrics.error_message,
+            metrics.file_size_bytes,
+            metrics.processing_status,
+        )

@@ -8,3 +8,4 @@ pytest.ini
 .logs/
 *.log
 __pycache__/
+*.gz

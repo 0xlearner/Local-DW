@@ -1,8 +1,10 @@
-import asyncio
+import gzip
+import json
+import os
 import asyncpg
 import pytest
-import json
 import io
+import polars as pl
 from src.pipeline.pipeline import Pipeline
 from src.config import Config
 
@@ -132,87 +134,92 @@ async def test_pipeline_execution(
         await pipeline.shutdown()
         await pipeline.cleanup()
 
-        # Verify results
-        conn = await asyncpg.connect(**test_config["postgres"])
+        # Verify results using a single connection
+        async with pg_pool.acquire() as conn:
+            # All database operations should be within this block
+            raw_count = await conn.fetchval("SELECT COUNT(*) FROM raw_test_data")
+            assert (
+                raw_count == 100
+            ), f"Expected 100 rows in raw_test_data, found {raw_count}"
 
-        # 1. Verify raw data
-        raw_count = await conn.fetchval("SELECT COUNT(*) FROM raw_test_data")
-        assert (
-            raw_count == 100
-        ), f"Expected 100 rows in raw_test_data, found {raw_count}"
+            processed_files = await conn.fetch(
+                """
+                SELECT file_name, status, rows_processed, error_message
+                FROM processed_files
+                ORDER BY processed_at DESC
+                """
+            )
+            assert (
+                len(processed_files) == 1
+            ), f"Expected 1 processed file, found {len(processed_files)}"
+            assert processed_files[0]["status"] == "COMPLETED"
+            assert processed_files[0]["rows_processed"] == 100
 
-        # 2. Check processed files
-        processed_files = await conn.fetch(
+            # 3. Examine change history in detail
+            change_details = await conn.fetch(
+                """
+                SELECT
+                    change_type,
+                    COUNT(*) as count,
+                    COUNT(DISTINCT batch_id) as batch_count,
+                    MIN(created_at) as first_change,
+                    MAX(created_at) as last_change
+                FROM change_history
+                WHERE table_name = 'raw_test_data'
+                GROUP BY change_type
+                ORDER BY change_type
             """
-            SELECT file_name, status, rows_processed, error_message
-            FROM processed_files
-            ORDER BY processed_at DESC
-        """
-        )
-        assert (
-            len(processed_files) == 1
-        ), f"Expected 1 processed file, found {len(processed_files)}"
-        assert processed_files[0]["status"] == "COMPLETED"
-        assert processed_files[0]["rows_processed"] == 100
+            )
 
-        # 3. Examine change history in detail
-        change_details = await conn.fetch(
+            print("\nChange History Details:")
+            for detail in change_details:
+                print(f"Change Type: {detail['change_type']}")
+                print(f"Total Changes: {detail['count']}")
+                print(f"Unique Batches: {detail['batch_count']}")
+                print(
+                    f"Time Range: {detail['first_change']} to {
+                        detail['last_change']}\n"
+                )
+
+            # 4. Check for duplicate batch_ids
+            duplicate_batches = await conn.fetch(
+                """
+                SELECT batch_id, COUNT(*) as count
+                FROM change_history
+                WHERE table_name = 'raw_test_data'
+                GROUP BY batch_id
+                HAVING COUNT(*) > 100
+                ORDER BY count DESC
             """
-            SELECT 
-                change_type,
-                COUNT(*) as count,
-                COUNT(DISTINCT batch_id) as batch_count,
-                MIN(created_at) as first_change,
-                MAX(created_at) as last_change
-            FROM change_history
-            WHERE table_name = 'raw_test_data'
-            GROUP BY change_type
-            ORDER BY change_type
-        """
-        )
+            )
 
-        print("\nChange History Details:")
-        for detail in change_details:
-            print(f"Change Type: {detail['change_type']}")
-            print(f"Total Changes: {detail['count']}")
-            print(f"Unique Batches: {detail['batch_count']}")
-            print(f"Time Range: {detail['first_change']} to {detail['last_change']}\n")
+            if duplicate_batches:
+                print("\nFound duplicate batch records:")
+                for batch in duplicate_batches:
+                    print(
+                        f"Batch ID: {batch['batch_id']}, Count: {
+                            batch['count']}"
+                    )
 
-        # 4. Check for duplicate batch_ids
-        duplicate_batches = await conn.fetch(
+            # 5. Verify final counts
+            changes = await conn.fetch(
+                """
+                SELECT change_type, COUNT(*) as count
+                FROM change_history
+                WHERE table_name = 'raw_test_data'
+                GROUP BY change_type
             """
-            SELECT batch_id, COUNT(*) as count
-            FROM change_history
-            WHERE table_name = 'raw_test_data'
-            GROUP BY batch_id
-            HAVING COUNT(*) > 100
-            ORDER BY count DESC
-        """
-        )
+            )
+            changes_dict = {row["change_type"]: row["count"] for row in changes}
 
-        if duplicate_batches:
-            print("\nFound duplicate batch records:")
-            for batch in duplicate_batches:
-                print(f"Batch ID: {batch['batch_id']}, Count: {batch['count']}")
-
-        # 5. Verify final counts
-        changes = await conn.fetch(
-            """
-            SELECT change_type, COUNT(*) as count
-            FROM change_history
-            WHERE table_name = 'raw_test_data'
-            GROUP BY change_type
-        """
-        )
-        changes_dict = {row["change_type"]: row["count"] for row in changes}
-
-        assert changes_dict.get("INSERT", 0) == 100, (
-            f"Expected 100 INSERT records, found {changes_dict.get('INSERT', 0)}. "
-            f"Full change distribution: {changes_dict}"
-        )
-        assert (
-            changes_dict.get("UPDATE", 0) == 0
-        ), f"Expected 0 UPDATE records, found {changes_dict.get('UPDATE', 0)}"
+            assert changes_dict.get("INSERT", 0) == 100, (
+                f"Expected 100 INSERT records, found {
+                    changes_dict.get('INSERT', 0)}. "
+                f"Full change distribution: {changes_dict}"
+            )
+            assert (
+                changes_dict.get("UPDATE", 0) == 0
+            ), f"Expected 0 UPDATE records, found {changes_dict.get('UPDATE', 0)}"
 
     finally:
         # Cleanup
@@ -228,3 +235,170 @@ async def test_pipeline_execution(
 
         if conn:
             await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_comprehensive_incremental_load(
+    test_config, minio_client, pg_pool, clean_test_db, sample_csv_data, tmp_path
+):
+    """Test comprehensive incremental load scenarios"""
+    target_table = "raw_data"
+    pipeline = None
+    batch_ids = []
+
+    try:
+        config = Config()
+        config.MINIO_ENDPOINT = test_config["s3"]["endpoint"]
+        config.MINIO_ACCESS_KEY = test_config["s3"]["access_key"]
+        config.MINIO_SECRET_KEY = test_config["s3"]["secret_key"]
+        config.MINIO_BUCKET = test_config["s3"]["bucket"]
+        config.PG_HOST = test_config["postgres"]["host"]
+        config.PG_PORT = test_config["postgres"]["port"]
+        config.PG_USER = test_config["postgres"]["user"]
+        config.PG_PASSWORD = test_config["postgres"]["password"]
+        config.PG_DATABASE = test_config["postgres"]["database"]
+
+        pipeline = Pipeline(config)
+        await pipeline.initialize()
+
+        # Initial load: first 50 rows - add ID offset to ensure unique IDs
+        initial_data = sample_csv_data.slice(0, 50).with_columns(pl.col("id") + 1000)
+        initial_csv = "initial_load.csv.gz"
+
+        # New records: next 25 rows with different ID offset
+        new_data = sample_csv_data.slice(50, 25).with_columns(pl.col("id") + 2000)
+        new_records_csv = "new_records.csv.gz"
+
+        # Updates: modify first 25 rows - use SAME ID offset as initial_data
+        updates_data = initial_data.slice(0, 25).with_columns([pl.col("age") + 100])
+        updates_csv = "updates.csv.gz"
+
+        # Create and upload files
+        for data, filename in [
+            (initial_data, initial_csv),
+            (new_data, new_records_csv),
+            (updates_data, updates_csv),
+        ]:
+            temp_csv = tmp_path / f"{filename}.temp"
+            data.write_csv(temp_csv)
+
+            compressed_path = tmp_path / filename
+            with open(temp_csv, "rb") as f_in:
+                with gzip.open(compressed_path, "wb") as f_out:
+                    f_out.write(f_in.read())
+
+            with open(compressed_path, "rb") as f:
+                file_data = f.read()
+                minio_client.put_object(
+                    bucket_name=test_config["s3"]["bucket"],
+                    object_name=filename,
+                    data=io.BytesIO(file_data),
+                    length=len(file_data),
+                )
+
+        # Run initial load and capture batch ID
+        initial_batch_id = await pipeline.run(
+            file_prefix=initial_csv,
+            primary_key="id",
+            merge_strategy="INSERT",
+            target_table=target_table,
+        )
+        batch_ids.append(initial_batch_id)
+
+        # Run new records and capture batch ID
+        new_records_batch_id = await pipeline.run(
+            file_prefix=new_records_csv,
+            primary_key="id",
+            merge_strategy="INSERT",
+            target_table=target_table,
+        )
+        batch_ids.append(new_records_batch_id)
+
+        # Run updates and capture batch ID
+        updates_batch_id = await pipeline.run(
+            file_prefix=updates_csv,
+            primary_key="id",
+            merge_strategy="UPDATE",
+            target_table=target_table,
+        )
+        batch_ids.append(updates_batch_id)
+
+        # Get actual metrics from database
+        db_summary = await pipeline.get_load_summary(target_table)
+
+        # Generate and save the report
+        report_path = tmp_path / "load_report.json"
+        await pipeline.save_load_report(
+            str(report_path), batch_ids=batch_ids, table_name=target_table
+        )
+
+        # Verify report exists and contains expected data
+        assert os.path.exists(report_path)
+        with open(report_path) as f:
+            report = json.load(f)
+
+        # Verify report structure and contents using actual metrics
+        assert "report_generated_at" in report
+        assert "generated_by" in report
+        assert report["generated_by"] == "0xlearner"
+        assert report["table_name"] == target_table
+
+        # Compare report summary with database metrics
+        assert (
+            report["summary"]["total_files_processed"]
+            == db_summary["total_files_processed"]
+        )
+        assert (
+            report["summary"]["total_records_processed"]
+            == db_summary["total_records_processed"]
+        )
+        assert report["summary"]["total_inserts"] == db_summary["total_inserts"]
+        assert report["summary"]["total_updates"] == db_summary["total_updates"]
+
+        # Additional verification using change history
+        assert db_summary["change_history"]["inserts"] == db_summary["total_inserts"]
+        assert db_summary["change_history"]["updates"] == db_summary["total_updates"]
+
+        # Verify expected counts based on our test data
+        assert db_summary["total_inserts"] == 75  # 50 initial + 25 new records
+        assert db_summary["total_updates"] == 25  # 25 updates
+
+        update_verification = await pipeline.verify_updates(
+            table_name=target_table,
+            id_range=(1000, 1025),
+            verifications=[
+                {
+                    "column": "age",
+                    "condition": "> 100",
+                    "message": "Age increased by 100",
+                }
+            ],
+        )
+
+        assert (
+            update_verification
+        ), "Update verification failed - some ages were not updated correctly"
+
+        # Log the actual numbers for transparency
+        print(f"\nActual metrics from database:")
+        print(f"Files processed: {db_summary['total_files_processed']}")
+        print(f"Records processed: {db_summary['total_records_processed']}")
+        print(f"Inserts: {db_summary['total_inserts']}")
+        print(f"Updates: {db_summary['total_updates']}")
+        print(f"Failures: {db_summary['total_failures']}")
+
+    finally:
+        if pipeline:
+            await pipeline.shutdown()
+            await pipeline.cleanup()
+
+        # Clean up test files from MinIO
+        for file_name in [initial_csv, new_records_csv, updates_csv]:
+            try:
+                minio_client.remove_object(test_config["s3"]["bucket"], file_name)
+            except:
+                pass
+
+        # Clean up the target table
+        async with pg_pool.acquire() as conn:
+            await conn.execute(f"DROP TABLE IF EXISTS {target_table}")

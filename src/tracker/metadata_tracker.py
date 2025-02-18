@@ -8,9 +8,14 @@ class MetadataTracker:
         self.conn_params = conn_params
         self._pool = None
 
+    def set_pool(self, pool: asyncpg.Pool):
+        """Set the connection pool"""
+        self._pool = pool
+
     async def initialize(self):
         """Initialize connection pool"""
-        self._pool = await asyncpg.create_pool(**self.conn_params)
+        if self._pool is None:
+            self._pool = await asyncpg.create_pool(**self.conn_params)
 
     async def get_pool(self):
         """Get or create connection pool"""
@@ -25,101 +30,8 @@ class MetadataTracker:
             self._pool = None
 
     async def initialize_metadata_tables(self):
-        pool = await self.get_pool()
-        async with pool.acquire() as conn:
-            # First create table if it doesn't exist
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS table_metadata (
-                    id SERIAL PRIMARY KEY,
-                    table_name TEXT NOT NULL,
-                    processed_at TIMESTAMP,
-                    total_rows INTEGER DEFAULT 0,
-                    last_file_processed TEXT,
-                    schema_snapshot JSONB,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(table_name)
-                )
-            """
-            )
-
-            # Remove the ALTER TABLE statement since columns are already defined in CREATE TABLE
-            # If you need to add new columns in the future, you can uncomment and modify this block
-            """
-            # Add schema_snapshot column if it doesn't exist
-            await conn.execute(
-                DO $$
-                BEGIN
-                    IF NOT EXISTS (
-                        SELECT 1 
-                        FROM information_schema.columns 
-                        WHERE table_name = 'table_metadata' 
-                        AND column_name = 'new_column_name'
-                    ) THEN
-                        ALTER TABLE table_metadata 
-                        ADD COLUMN new_column_name NEW_TYPE;
-                    END IF;
-                END $$;
-            )
-            """
-
-            # Table for tracking changes to data
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS change_history (
-                    id SERIAL PRIMARY KEY,
-                    table_name TEXT NOT NULL,
-                    primary_key_column TEXT NOT NULL,
-                    primary_key_value TEXT NOT NULL,
-                    column_name TEXT NOT NULL,
-                    old_value TEXT,
-                    new_value TEXT,
-                    change_type TEXT NOT NULL, -- INSERT, UPDATE, DELETE
-                    file_name TEXT NOT NULL,
-                    processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    batch_id TEXT NOT NULL
-                )
-            """
-            )
-
-            # Table for tracking merge operations
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS merge_history (
-                    id SERIAL PRIMARY KEY,
-                    table_name TEXT NOT NULL,
-                    file_name TEXT NOT NULL,
-                    rows_inserted INTEGER DEFAULT 0,
-                    rows_updated INTEGER DEFAULT 0,
-                    rows_deleted INTEGER DEFAULT 0,
-                    started_at TIMESTAMP NOT NULL,
-                    completed_at TIMESTAMP,
-                    status TEXT NOT NULL, -- IN_PROGRESS, COMPLETED, FAILED
-                    error_message TEXT,
-                    batch_id TEXT NOT NULL
-                )
-            """
-            )
-
-            # Table for tracking recovery points
-            await conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS recovery_points (
-                    id SERIAL PRIMARY KEY,
-                    table_name TEXT NOT NULL,
-                    file_name TEXT NOT NULL,
-                    batch_id TEXT NOT NULL,
-                    checkpoint_data JSONB NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    status TEXT NOT NULL, -- ACTIVE, PROCESSED, FAILED
-                    retry_count INTEGER DEFAULT 0,
-                    last_error TEXT,
-                    next_retry_at TIMESTAMP,
-                    UNIQUE(table_name, file_name, batch_id)
-                )
-            """
-            )
+        """This method is kept for backward compatibility but no longer creates tables"""
+        pass  # Tables are now created by Pipeline._initialize_infrastructure_tables
 
     async def record_change(
         self,
