@@ -1,14 +1,17 @@
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Dict, Any, Optional
-import asyncpg
+from datetime import datetime
+from src.connection_manager import ConnectionManager
+from src.logger import setup_logger
 
 
 @dataclass
 class PipelineMetrics:
     file_name: str
     table_name: str
+    batch_id: str
     start_time: datetime
+    load_duration_seconds: float = 0.0
     end_time: Optional[datetime] = None
     rows_processed: int = 0
     rows_inserted: int = 0
@@ -20,74 +23,53 @@ class PipelineMetrics:
 
 
 class MetricsTracker:
-    def __init__(self, conn_params: Dict[str, Any]):
-        self.conn_params = conn_params
-        self._pool = None
+    def __init__(self):
+        self.logger = setup_logger("metrics_tracker")
 
-    def set_pool(self, pool: asyncpg.Pool):
-        """Set the connection pool"""
-        self._pool = pool
+    async def initialize(self):
+        """Verify connection pool exists"""
+        ConnectionManager.get_pool()  # Will raise if pool not initialized
 
-    async def initialize_metrics_table(self):
-        if self._pool is None:
-            async with asyncpg.create_pool(**self.conn_params) as pool:
-                async with pool.acquire() as conn:
-                    await self._create_metrics_table(conn)
-        else:
-            async with self._pool.acquire() as conn:
-                await self._create_metrics_table(conn)
-
-    async def _create_metrics_table(self, conn: asyncpg.Connection):
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS pipeline_metrics (
-                id SERIAL PRIMARY KEY,
-                file_name TEXT NOT NULL,
-                table_name TEXT NOT NULL,
-                start_time TIMESTAMP NOT NULL,
-                end_time TIMESTAMP,
-                rows_processed INTEGER DEFAULT 0,
-                rows_inserted INTEGER DEFAULT 0,
-                rows_updated INTEGER DEFAULT 0,
-                rows_failed INTEGER DEFAULT 0,
-                error_message TEXT,
-                file_size_bytes BIGINT DEFAULT 0,
-                processing_status TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    async def save_metrics(self, metrics: PipelineMetrics) -> None:
+        """Save pipeline metrics to the database"""
+        async with ConnectionManager.get_pool().acquire() as conn:
+            await conn.execute(
+                """
+                    INSERT INTO pipeline_metrics (
+                        file_name, table_name, batch_id, start_time, end_time,
+                        processing_status, rows_processed, rows_inserted,
+                        rows_updated, rows_failed, file_size_bytes,
+                        error_message
+                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    """,
+                metrics.file_name,
+                metrics.table_name,
+                metrics.batch_id,
+                metrics.start_time,
+                metrics.end_time or datetime.now(),
+                metrics.processing_status,
+                metrics.rows_processed,
+                metrics.rows_inserted,
+                metrics.rows_updated,
+                metrics.rows_failed,
+                metrics.file_size_bytes,
+                metrics.error_message,
             )
-            """
-        )
 
-    async def save_metrics(self, metrics: PipelineMetrics):
-        if self._pool is None:
-            async with asyncpg.create_pool(**self.conn_params) as pool:
-                async with pool.acquire() as conn:
-                    await self._save_metrics_to_db(conn, metrics)
-        else:
-            async with self._pool.acquire() as conn:
-                await self._save_metrics_to_db(conn, metrics)
-
-    async def _save_metrics_to_db(
-        self, conn: asyncpg.Connection, metrics: PipelineMetrics
-    ):
-        await conn.execute(
+    async def get_metrics_summary(self, table_name: Optional[str] = None) -> Dict[str, Any]:
+        """Get summary of pipeline metrics"""
+        async with ConnectionManager.get_pool().acquire() as conn:
+            query = """
+                SELECT
+                    COUNT(DISTINCT file_name) as total_files,
+                    SUM(rows_processed) as total_rows_processed,
+                    SUM(rows_inserted) as total_rows_inserted,
+                    SUM(rows_updated) as total_rows_updated,
+                    SUM(rows_failed) as total_rows_failed,
+                    COUNT(CASE WHEN processing_status = 'COMPLETED' THEN 1 END) as successful_loads,
+                    COUNT(CASE WHEN processing_status = 'FAILED' THEN 1 END) as failed_loads
+                FROM pipeline_metrics
+                WHERE ($1::text IS NULL OR table_name = $1)
             """
-            INSERT INTO pipeline_metrics (
-                file_name, table_name, start_time, end_time,
-                rows_processed, rows_inserted, rows_updated,
-                rows_failed, error_message, file_size_bytes,
-                processing_status
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-            """,
-            metrics.file_name,
-            metrics.table_name,
-            metrics.start_time,
-            metrics.end_time,
-            metrics.rows_processed,
-            metrics.rows_inserted,
-            metrics.rows_updated,
-            metrics.rows_failed,
-            metrics.error_message,
-            metrics.file_size_bytes,
-            metrics.processing_status,
-        )
+            result = await conn.fetchrow(query, table_name)
+            return dict(result)

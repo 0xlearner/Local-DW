@@ -2,6 +2,7 @@ import gzip
 from io import BytesIO
 from typing import Generator
 import minio
+import asyncio
 from src.config import Config
 from src.logger import setup_logger
 
@@ -18,9 +19,14 @@ class S3Client:
         )
         self.bucket = config.MINIO_BUCKET
 
-    def list_files(self, prefix: str = "") -> Generator[str, None, None]:
+    async def list_files(self, prefix: str = "") -> Generator[str, None, None]:
         try:
-            objects = self.client.list_objects(self.bucket, prefix=prefix)
+            loop = asyncio.get_event_loop()
+            objects = await loop.run_in_executor(
+                None,
+                lambda: list(self.client.list_objects(
+                    self.bucket, prefix=prefix))
+            )
             for obj in objects:
                 if obj.object_name.endswith(".csv.gz"):
                     yield obj.object_name
@@ -28,24 +34,33 @@ class S3Client:
             logger.error(f"Error listing files: {str(e)}")
             raise
 
-    def read_gz_file(self, file_name: str) -> BytesIO:
+    async def read_file(self, file_name: str) -> BytesIO:
         """
         Read and decompress a gzipped file from S3, returning a BytesIO object
         containing the uncompressed data.
         """
         response = None
         try:
-            response = self.client.get_object(self.bucket, file_name)
-            gz_data = BytesIO(response.read())
+            loop = asyncio.get_event_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.client.get_object(self.bucket, file_name)
+            )
+
+            # Read data in a non-blocking way
+            data = await loop.run_in_executor(None, response.read)
+            gz_data = BytesIO(data)
+
+            # Decompress data
             with gzip.GzipFile(fileobj=gz_data, mode="rb") as gz_file:
-                # Create a new BytesIO object with the uncompressed data
                 uncompressed_data = BytesIO(gz_file.read())
-                uncompressed_data.seek(0)  # Reset position to start
+                uncompressed_data.seek(0)
                 return uncompressed_data
+
         except Exception as e:
             logger.error(f"Error reading file {file_name}: {str(e)}")
             raise
         finally:
             if response:
-                response.close()
-                response.release_conn()
+                await loop.run_in_executor(None, response.close)
+                await loop.run_in_executor(None, response.release_conn)

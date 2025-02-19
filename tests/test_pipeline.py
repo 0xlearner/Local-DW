@@ -5,7 +5,7 @@ import asyncpg
 import pytest
 import io
 import polars as pl
-from src.pipeline.pipeline import Pipeline
+from src.pipeline.data_pipeline import Pipeline
 from src.config import Config
 
 
@@ -110,7 +110,8 @@ async def test_pipeline_execution(
 
         # Verify file was uploaded
         try:
-            minio_client.stat_object(test_config["s3"]["bucket"], test_file_name)
+            minio_client.stat_object(
+                test_config["s3"]["bucket"], test_file_name)
         except Exception as e:
             pytest.fail(f"Failed to upload test file to MinIO: {str(e)}")
 
@@ -210,7 +211,8 @@ async def test_pipeline_execution(
                 GROUP BY change_type
             """
             )
-            changes_dict = {row["change_type"]: row["count"] for row in changes}
+            changes_dict = {row["change_type"]: row["count"]
+                            for row in changes}
 
             assert changes_dict.get("INSERT", 0) == 100, (
                 f"Expected 100 INSERT records, found {
@@ -229,7 +231,8 @@ async def test_pipeline_execution(
 
         # Clean up the test file from MinIO
         try:
-            minio_client.remove_object(test_config["s3"]["bucket"], test_file_name)
+            minio_client.remove_object(
+                test_config["s3"]["bucket"], test_file_name)
         except:
             pass
 
@@ -262,15 +265,18 @@ async def test_comprehensive_incremental_load(
         await pipeline.initialize()
 
         # Initial load: first 50 rows - add ID offset to ensure unique IDs
-        initial_data = sample_csv_data.slice(0, 50).with_columns(pl.col("id") + 1000)
+        initial_data = sample_csv_data.slice(
+            0, 50).with_columns(pl.col("id") + 1000)
         initial_csv = "initial_load.csv.gz"
 
         # New records: next 25 rows with different ID offset
-        new_data = sample_csv_data.slice(50, 25).with_columns(pl.col("id") + 2000)
+        new_data = sample_csv_data.slice(
+            50, 25).with_columns(pl.col("id") + 2000)
         new_records_csv = "new_records.csv.gz"
 
         # Updates: modify first 25 rows - use SAME ID offset as initial_data
-        updates_data = initial_data.slice(0, 25).with_columns([pl.col("age") + 100])
+        updates_data = initial_data.slice(
+            0, 25).with_columns([pl.col("age") + 100])
         updates_csv = "updates.csv.gz"
 
         # Create and upload files
@@ -327,7 +333,7 @@ async def test_comprehensive_incremental_load(
         db_summary = await pipeline.get_load_summary(target_table)
 
         # Generate and save the report
-        report_path = tmp_path / "load_report.json"
+        report_path = "/app/reports/load_report.json"
         await pipeline.save_load_report(
             str(report_path), batch_ids=batch_ids, table_name=target_table
         )
@@ -356,8 +362,8 @@ async def test_comprehensive_incremental_load(
         assert report["summary"]["total_updates"] == db_summary["total_updates"]
 
         # Additional verification using change history
-        assert db_summary["change_history"]["inserts"] == db_summary["total_inserts"]
-        assert db_summary["change_history"]["updates"] == db_summary["total_updates"]
+        assert db_summary["change_history"]["INSERT"] == db_summary["total_inserts"]
+        assert db_summary["change_history"]["UPDATE"] == db_summary["total_updates"]
 
         # Verify expected counts based on our test data
         assert db_summary["total_inserts"] == 75  # 50 initial + 25 new records
@@ -395,7 +401,8 @@ async def test_comprehensive_incremental_load(
         # Clean up test files from MinIO
         for file_name in [initial_csv, new_records_csv, updates_csv]:
             try:
-                minio_client.remove_object(test_config["s3"]["bucket"], file_name)
+                minio_client.remove_object(
+                    test_config["s3"]["bucket"], file_name)
             except:
                 pass
 

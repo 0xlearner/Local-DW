@@ -1,0 +1,64 @@
+{
+  "report_generated_at": "2025-02-19T12:41:06.696679",
+  "generated_by": "0xlearner",
+  "table_name": "raw_data",
+  "summary": {
+    "total_files_processed": 3,
+    "total_records_processed": 0,
+    "total_inserts": 75,
+    "total_updates": 25,
+    "total_failures": 0,
+    "file_sizes": {
+      "max": 0,
+      "average": 0
+    },
+    "change_history": {
+      "INSERT": 75,
+      "UPDATE": 25
+    }
+  },
+  "operations": [
+    {
+      "file_name": "updates.csv.gz",
+      "table_name": "raw_data",
+      "batch_id": "1d684926-21a1-4cf3-8c91-1bc1f89190b2",
+      "start_time": "2025-02-19 12:41:02.796789+00:00",
+      "end_time": "2025-02-19 12:41:06.524804+00:00",
+      "processing_status": "COMPLETED",
+      "rows_processed": null,
+      "rows_inserted": 0,
+      "rows_updated": null,
+      "rows_failed": 0,
+      "file_size_bytes": 0,
+      "error_message": null
+    },
+    {
+      "file_name": "new_records.csv.gz",
+      "table_name": "raw_data",
+      "batch_id": "97939fa1-334a-41ca-81cf-776edb6683ae",
+      "start_time": "2025-02-19 12:40:59.840670+00:00",
+      "end_time": "2025-02-19 12:41:02.492107+00:00",
+      "processing_status": "COMPLETED",
+      "rows_processed": null,
+      "rows_inserted": null,
+      "rows_updated": 0,
+      "rows_failed": 0,
+      "file_size_bytes": 0,
+      "error_message": null
+    },
+    {
+      "file_name": "initial_load.csv.gz",
+      "table_name": "raw_data",
+      "batch_id": "4746b64c-ec1b-4648-856a-25e0ee54d318",
+      "start_time": "2025-02-19 12:40:50.755769+00:00",
+      "end_time": "2025-02-19 12:40:59.664199+00:00",
+      "processing_status": "COMPLETED",
+      "rows_processed": null,
+      "rows_inserted": null,
+      "rows_updated": 0,
+      "rows_failed": 0,
+      "file_size_bytes": 0,
+      "error_message": null
+    }
+  ]
+}

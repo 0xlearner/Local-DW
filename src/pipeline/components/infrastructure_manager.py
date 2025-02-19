@@ -1,0 +1,102 @@
+import asyncpg
+from src.logger import setup_logger
+
+
+class InfrastructureManager:
+    def __init__(self):
+        self.logger = setup_logger("infrastructure_manager")
+
+    async def initialize_infrastructure_tables(self, conn: asyncpg.Connection):
+        """Initialize all infrastructure tables required by the pipeline and its components"""
+        await conn.execute(
+            """
+                -- Table metadata tracking
+                CREATE TABLE IF NOT EXISTS table_metadata (
+                    id SERIAL PRIMARY KEY,
+                    table_name TEXT NOT NULL,
+                    processed_at TIMESTAMP,
+                    total_rows INTEGER DEFAULT 0,
+                    last_file_processed TEXT,
+                    schema_snapshot JSONB,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(table_name)
+                );
+
+                -- Change history tracking
+                CREATE TABLE IF NOT EXISTS change_history (
+                    id SERIAL PRIMARY KEY,
+                    table_name TEXT NOT NULL,
+                    primary_key_column TEXT NOT NULL,
+                    primary_key_value TEXT NOT NULL,
+                    column_name TEXT NOT NULL,
+                    old_value TEXT,
+                    new_value TEXT,
+                    change_type TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Processed files tracking
+                CREATE TABLE IF NOT EXISTS processed_files (
+                    id SERIAL PRIMARY KEY,
+                    file_name VARCHAR(255) NOT NULL,
+                    file_hash VARCHAR(64),
+                    status VARCHAR(20),
+                    rows_processed INTEGER,
+                    error_message TEXT,
+                    processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT processed_files_file_name_key UNIQUE (file_name)
+                );
+
+                -- Pipeline metrics
+                CREATE TABLE IF NOT EXISTS pipeline_metrics (
+                    id SERIAL PRIMARY KEY,
+                    file_name TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    start_time TIMESTAMP WITH TIME ZONE,
+                    end_time TIMESTAMP WITH TIME ZONE,
+                    processing_status TEXT,
+                    rows_processed INTEGER DEFAULT 0,
+                    rows_inserted INTEGER DEFAULT 0,
+                    rows_updated INTEGER DEFAULT 0,
+                    rows_failed INTEGER DEFAULT 0,
+                    file_size_bytes BIGINT,
+                    error_message TEXT,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Merge history
+                CREATE TABLE IF NOT EXISTS merge_history (
+                    id SERIAL PRIMARY KEY,
+                    table_name TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                    completed_at TIMESTAMP WITH TIME ZONE,
+                    status TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    rows_inserted INTEGER DEFAULT 0,
+                    rows_updated INTEGER DEFAULT 0,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                );
+
+                -- Recovery points
+                CREATE TABLE IF NOT EXISTS recovery_points (
+                    id SERIAL PRIMARY KEY,
+                    table_name TEXT NOT NULL,
+                    file_name TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    checkpoint_data JSONB NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT NOT NULL,
+                    retry_count INTEGER DEFAULT 0,
+                    last_error TEXT,
+                    next_retry_at TIMESTAMP WITH TIME ZONE,
+                    UNIQUE(table_name, file_name, batch_id)
+                );
+            """
+        )
+        self.logger.info("Successfully initialized all infrastructure tables")
