@@ -46,6 +46,7 @@ class InfrastructureManager:
                     status VARCHAR(20),
                     rows_processed INTEGER,
                     error_message TEXT,
+                    batch_id TEXT,
                     processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                     CONSTRAINT processed_files_file_name_key UNIQUE (file_name)
@@ -98,6 +99,28 @@ class InfrastructureManager:
                     next_retry_at TIMESTAMP WITH TIME ZONE,
                     UNIQUE(table_name, file_name, batch_id)
                 );
+
+                 -- Batch processing tracking
+                    CREATE TABLE IF NOT EXISTS batch_processing (
+                        id SERIAL PRIMARY KEY,
+                        batch_id TEXT NOT NULL,
+                        table_name TEXT NOT NULL,
+                        file_name TEXT NOT NULL,
+                        batch_number INTEGER NOT NULL,
+                        total_batches INTEGER NOT NULL,
+                        records_in_batch INTEGER NOT NULL,
+                        records_processed INTEGER DEFAULT 0,
+                        records_inserted INTEGER DEFAULT 0,
+                        records_updated INTEGER DEFAULT 0,
+                        records_failed INTEGER DEFAULT 0,
+                        start_time TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        end_time TIMESTAMP WITH TIME ZONE,
+                        status TEXT NOT NULL,
+                        error_message TEXT,
+                        processing_duration_seconds FLOAT,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(batch_id, batch_number)
+                    );
             """
         )
         self.logger.info("Successfully initialized all infrastructure tables")

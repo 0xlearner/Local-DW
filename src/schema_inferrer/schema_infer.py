@@ -31,11 +31,26 @@ class SchemaInferrer:
             return False
 
     def _is_array_string(self, s: str) -> bool:
-        """Check if string represents a PostgreSQL array."""
+        """Check if string represents an array in various formats."""
+        if not isinstance(s, str):
+            return False
         s = s.strip()
-        return (s.startswith("{") and s.endswith("}")) or (
-            s.startswith("[") and s.endswith("]")
-        )
+        # Check for PostgreSQL array format
+        if s.startswith("{") and s.endswith("}"):
+            return True
+        # Check for Python list string format
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                import ast
+
+                ast.literal_eval(s)
+                return True
+            except (ValueError, SyntaxError):
+                return False
+        # Check for comma-separated format
+        if "," in s:
+            return True
+        return False
 
     def _detect_array_type(self, values: List[str]) -> str:
         """
@@ -96,14 +111,6 @@ class SchemaInferrer:
     ) -> Tuple[str, bool]:
         """
         Infer PostgreSQL type for a column based on name and sample values.
-
-        Args:
-            col_name: Name of the column
-            sample_values: List of sample values from the column
-            dtype: Polars dtype of the column
-
-        Returns:
-            Tuple of (PostgreSQL type, is_nullable)
         """
         # Check for datetime patterns in column name
         is_datetime_column = any(
@@ -125,10 +132,16 @@ class SchemaInferrer:
 
         # Check for JSON or Array types
         if isinstance(valid_samples[0], str):
+            # Only check for arrays if the column name suggests it might be an array
+            if any(
+                hint in col_name.lower()
+                for hint in ["_array", "_list", "_items", "tags", "verifications"]
+            ):
+                if all(self._is_array_string(s) for s in valid_samples[:5]):
+                    return self._detect_array_type(valid_samples), is_nullable
+
             if all(self._is_json_string(s) for s in valid_samples[:5]):
                 return "JSONB", is_nullable
-            if all(self._is_array_string(s) for s in valid_samples[:5]):
-                return self._detect_array_type(valid_samples), is_nullable
 
         # Map Polars types to PostgreSQL types
         if dtype == pl.Int64:
@@ -144,7 +157,9 @@ class SchemaInferrer:
 
         return "TEXT", is_nullable
 
-    def infer_schema(self, csv_data: Union[str, BytesIO], file_name: str) -> Dict[str, str]:
+    def infer_schema(
+        self, csv_data: Union[str, BytesIO], file_name: str
+    ) -> Dict[str, str]:
         """
         Infer PostgreSQL schema from CSV data.
 
@@ -158,7 +173,7 @@ class SchemaInferrer:
             # Handle BytesIO input
             if isinstance(csv_data, BytesIO):
                 csv_data.seek(0)
-                csv_content = csv_data.read().decode('utf-8')
+                csv_content = csv_data.read().decode("utf-8")
                 csv_buffer = StringIO(csv_content)
             else:
                 csv_buffer = StringIO(csv_data)
@@ -215,8 +230,9 @@ class SchemaInferrer:
             columns = []
 
             # Filter out created_at and updated_at if they exist in the schema
-            filtered_schema = {k: v for k, v in schema.items()
-                               if k not in ('created_at', 'updated_at')}
+            filtered_schema = {
+                k: v for k, v in schema.items() if k not in ("created_at", "updated_at")
+            }
 
             for column_name, data_type in filtered_schema.items():
                 quoted_column = f'"{column_name}"'
@@ -226,10 +242,12 @@ class SchemaInferrer:
                     columns.append(f"{quoted_column} {data_type}")
 
             # Add created_at and updated_at columns
-            columns.extend([
-                "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP",
-                "updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP"
-            ])
+            columns.extend(
+                [
+                    "created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP",
+                    "updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP",
+                ]
+            )
 
             # Create table
             create_table_sql = f"""
@@ -263,9 +281,7 @@ class SchemaInferrer:
             self.logger.info(f"Successfully created table {table_name}")
 
         except Exception as e:
-            self.logger.error(
-                f"Error creating table {table_name}: {str(e)}"
-            )
+            self.logger.error(f"Error creating table {table_name}: {str(e)}")
             raise
 
     async def validate_schema_compatibility(
@@ -323,7 +339,5 @@ class SchemaInferrer:
                 return True
 
         except Exception as e:
-            self.logger.error(
-                f"Error validating schema for {table_name}: {str(e)}"
-            )
+            self.logger.error(f"Error validating schema for {table_name}: {str(e)}")
             raise

@@ -1,6 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import List
+import asyncio
 
 
 from src.config import Config
@@ -114,8 +115,7 @@ class Pipeline:
         """
         error_message = str(error)
         self.logger.error(
-            f"Error processing file {file_name}: {error_message}",
-            exc_info=True
+            f"Error processing file {file_name}: {error_message}", exc_info=True
         )
 
         # Update metrics
@@ -130,13 +130,13 @@ class Pipeline:
                 file_hash=file_hash,
                 status="FAILED",
                 rows_processed=metrics.rows_processed or 0,
-                error_message=error_message
+                error_message=error_message,
+                batch_id=metrics.batch_id,
             )
         except Exception as e:
             # Log but don't raise - we want to preserve the original error
             self.logger.error(
-                f"Error updating file tracker for {file_name}: {str(e)}",
-                exc_info=True
+                f"Error updating file tracker for {file_name}: {str(e)}", exc_info=True
             )
 
         # Attempt to record failure in recovery manager
@@ -145,14 +145,14 @@ class Pipeline:
                 file_name=file_name,
                 error_message=error_message,
                 table_name=metrics.table_name,
-                rows_processed=metrics.rows_processed or 0
+                rows_processed=metrics.rows_processed or 0,
             )
         except Exception as e:
             # Log but don't raise - we want to preserve the original error
             self.logger.error(
                 f"Error recording failure in recovery manager for {
                     file_name}: {str(e)}",
-                exc_info=True
+                exc_info=True,
             )
 
     async def process_file(
@@ -165,8 +165,7 @@ class Pipeline:
         """Process a single file with the specified merge strategy"""
         batch_id = str(uuid.uuid4())
         table_name = target_table or self._get_table_name(file_name)
-        csv_df, file_hash, schema = await self.file_processor.process_file(
-            file_name)
+        csv_df, file_hash, schema = await self.file_processor.process_file(file_name)
 
         metrics = PipelineMetrics(
             file_name=file_name,
@@ -196,8 +195,10 @@ class Pipeline:
 
                 if table_exists:
                     # Validate schema compatibility
-                    is_compatible = await self.schema_inferrer.validate_schema_compatibility(
-                        table_name, schema
+                    is_compatible = (
+                        await self.schema_inferrer.validate_schema_compatibility(
+                            table_name, schema
+                        )
                     )
                     if not is_compatible:
                         raise ValueError(
@@ -218,21 +219,52 @@ class Pipeline:
                     f"Data validation failed for {
                         file_name}: {validation_errors}"
                 )
-                raise ValueError(f"Data validation failed: {
-                                 validation_errors}")
+                raise ValueError(
+                    f"Data validation failed: {
+                        validation_errors}"
+                )
 
             # Load the data using the enhanced data loader
             metrics.rows_processed = len(csv_df)
             await self.data_loader.load_data_with_tracking(
-                csv_df, table_name, primary_key, file_name, batch_id,
-                merge_strategy, metrics, schema
+                csv_df,
+                table_name,
+                primary_key,
+                file_name,
+                batch_id,
+                merge_strategy,
+                metrics,
+                schema,
             )
+
+            # Monitor batch processing status
+            final_status = await self.monitor_batch_processing(batch_id)
+
+            # Log final processing status
+            if final_status["summary"]["overall_status"] == "COMPLETED":
+                self.logger.info(
+                    f"File processing completed successfully. "
+                    f"Processed {final_status['summary']
+                                 ['total_records_processed']} records "
+                    f"in {final_status['summary']
+                          ['completed_batches']} batches"
+                )
+            elif final_status["summary"]["overall_status"] == "FAILED":
+                self.logger.error(
+                    f"File processing completed with failures. "
+                    f"Failed batches: {
+                        final_status['summary']['failed_batches']}"
+                )
 
             # Update metrics and mark file as processed
             metrics.end_time = datetime.now()
             metrics.processing_status = "COMPLETED"
             await self.file_tracker.mark_file_processed(
-                file_name, file_hash, "COMPLETED", metrics.rows_processed
+                file_name=file_name,
+                file_hash=file_hash,
+                status="COMPLETED",
+                rows_processed=metrics.rows_processed,
+                batch_id=batch_id,
             )
 
             return batch_id
@@ -243,6 +275,59 @@ class Pipeline:
         finally:
             metrics.end_time = datetime.now()
             await self.metrics_tracker.save_metrics(metrics)
+
+    async def get_batch_processing_status(self, batch_id: str) -> list[dict]:
+        """Get detailed batch processing status for a specific batch"""
+        return await self.data_loader.batch_tracker.get_batch_status(batch_id)
+
+    async def monitor_batch_processing(
+        self, batch_id: str, polling_interval: int = 5
+    ) -> dict:
+        """
+        Monitor the progress of batch processing until completion or failure.
+
+        Args:
+            batch_id: The batch ID to monitor
+            polling_interval: Time in seconds between status checks
+
+        Returns:
+            Final batch processing status
+        """
+        while True:
+            status = await self.get_batch_processing_status(batch_id)
+
+            if not status["batches"]:
+                self.logger.warning(
+                    f"No batch information found for batch_id: {batch_id}"
+                )
+                return status
+
+            summary = status["summary"]
+
+            # Log current status
+            self.logger.info(
+                f"Batch Processing Status: "
+                f"Completed: {summary['completed_batches']
+                              }/{summary['total_batches']}, "
+                f"Failed: {summary['failed_batches']}, "
+                f"In Progress: {summary['in_progress_batches']}, "
+                f"Records Processed: {summary['total_records_processed']}"
+            )
+
+            # If there are failed batches, log their errors
+            failed_batches = [b for b in status["batches"]
+                              if b["status"] == "FAILED"]
+            for batch in failed_batches:
+                self.logger.error(
+                    f"Batch {batch['batch_number']} failed: {
+                        batch['error_message']}"
+                )
+
+            # Check if processing is complete (either all done or any failures)
+            if summary["overall_status"] in ["COMPLETED", "FAILED"]:
+                return status
+
+            await asyncio.sleep(polling_interval)
 
     async def run(
         self,
@@ -314,8 +399,13 @@ class Pipeline:
                     for record in records:
                         if not eval(f"{record[column]} {condition}"):
                             failed_records.append(
-                                {"id": record["id"], f"{
-                                    column}": record[column]}
+                                {
+                                    "id": record["id"],
+                                    f"{
+                                        column}": record[
+                                        column
+                                    ],
+                                }
                             )
 
                     if failed_records:
@@ -349,13 +439,9 @@ class Pipeline:
         await ConnectionManager.close()
         self._initialized = False
 
-    async def cleanup(self):
-        """Clean up all resources"""
-        await self.shutdown()
-
     def _get_table_name(self, file_name: str) -> str:
         """Extract table name from file name"""
-        return file_name.split('/')[-1].split('.')[0].lower()
+        return file_name.split("/")[-1].split(".")[0].lower()
 
     async def get_load_summary(self, table_name: str = None) -> dict:
         if not self._initialized:
@@ -363,19 +449,14 @@ class Pipeline:
         return await self.report_generator.get_load_summary(table_name)
 
     async def generate_load_report(
-        self,
-        batch_ids: List[str] = None,
-        table_name: str = None
+        self, batch_ids: List[str] = None, table_name: str = None
     ) -> dict:
         if not self._initialized:
             await self.initialize()
         return await self.report_generator.generate_report(table_name, batch_ids)
 
     async def save_load_report(
-        self,
-        report_path: str,
-        batch_ids: List[str] = None,
-        table_name: str = None
+        self, report_path: str, batch_ids: List[str] = None, table_name: str = None
     ) -> None:
         if not self._initialized:
             await self.initialize()

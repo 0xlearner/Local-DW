@@ -13,18 +13,49 @@ class ValueFormatter:
         if value is None:
             return None
 
-        pg_type = schema[col_name].upper() if col_name in schema else "TEXT"
+        col_type = schema.get(col_name, "text").upper()
+
+        # Handle array types
+        if col_type == "ARRAY" or "[]" in col_type:
+            if isinstance(value, str):
+                try:
+                    # Handle Python list string format
+                    if value.startswith("[") and value.endswith("]"):
+                        import ast
+
+                        python_list = ast.literal_eval(value)
+                        # Ensure all elements are strings
+                        return [str(item) for item in python_list]
+                    # Handle PostgreSQL array format
+                    elif value.startswith("{") and value.endswith("}"):
+                        items = value[1:-1].split(",")
+                        return [item.strip() for item in items if item.strip()]
+                    # Handle comma-separated format
+                    elif "," in value:
+                        return [
+                            item.strip() for item in value.split(",") if item.strip()
+                        ]
+                    # Handle single value
+                    else:
+                        return [value.strip()]
+                except Exception as e:
+                    self.logger.error(f"Error formatting array value: {str(e)}")
+                    return []
+            elif isinstance(value, (list, tuple)):
+                # If it's already a list or tuple, ensure all elements are strings
+                return [str(item) for item in value]
+            return [str(value)]  # Convert single value to single-element array
 
         formatters = {
             "TIMESTAMP": self._format_timestamp,
             "DATE": self._format_timestamp,
             "TIME": self._format_timestamp,
             "JSON": self._format_json,
-            "JSONB": self._format_json
+            "JSONB": self._format_json,
         }
 
         for type_key, formatter in formatters.items():
-            if type_key in pg_type:
+            if type_key in col_type:
                 return formatter(value, col_name)
 
         return value
@@ -64,8 +95,10 @@ class ValueFormatter:
                 raise ValueError(f"Could not parse timestamp: {value}")
 
             except ValueError as e:
-                self.logger.error(f"Error parsing timestamp for {
-                                  col_name}: {value} - {str(e)}")
+                self.logger.error(
+                    f"Error parsing timestamp for {
+                                  col_name}: {value} - {str(e)}"
+                )
                 raise
 
         raise ValueError(f"Unexpected type for timestamp value: {type(value)}")
@@ -93,7 +126,7 @@ class ValueFormatter:
             "NUMERIC": "::numeric",
             "INTEGER": "::bigint",
             "BIGINT": "::bigint",
-            "BOOLEAN": "::boolean"
+            "BOOLEAN": "::boolean",
         }
 
         for type_key, cast in type_casts.items():

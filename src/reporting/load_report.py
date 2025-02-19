@@ -1,7 +1,7 @@
 import json
 import os
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from src.connection_manager import ConnectionManager
 from src.logger import setup_logger
@@ -60,8 +60,22 @@ class LoadReportGenerator:
     async def generate_report(
         self,
         table_name: Optional[str] = None,
-        batch_ids: Optional[List[str]] = None
+        batch_ids: Optional[Union[str, List[str]]] = None
     ) -> dict:
+        """
+        Generate a load report.
+
+        Args:
+            table_name: Optional name of the table to filter results
+            batch_ids: Optional batch ID (string) or list of batch IDs to filter results
+
+        Returns:
+            dict: Report containing summary and detailed operations
+        """
+        # Convert single batch_id to list if provided
+        if isinstance(batch_ids, str):
+            batch_ids = [batch_ids]
+
         summary = await self.get_load_summary(table_name)
 
         async with ConnectionManager.get_pool().acquire() as conn:
@@ -98,9 +112,21 @@ class LoadReportGenerator:
         self,
         report_path: str,
         table_name: Optional[str] = None,
-        batch_ids: Optional[List[str]] = None
+        batch_ids: Optional[Union[str, List[str]]] = None
     ) -> None:
+        """
+        Save load report to a file.
+
+        Args:
+            report_path: Path where the report will be saved
+            table_name: Optional name of the table to filter results
+            batch_ids: Optional batch ID (string) or list of batch IDs to filter results
+        """
         try:
+            # Convert single batch_id to list if provided
+            if isinstance(batch_ids, str):
+                batch_ids = [batch_ids]
+
             report = await self.generate_report(table_name, batch_ids)
 
             os.makedirs(os.path.dirname(

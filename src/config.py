@@ -15,5 +15,5 @@ class Config:
     PG_PASSWORD: str = os.getenv("TEST_POSTGRES_PASSWORD", "postgres")
     PG_DATABASE: str = os.getenv("TEST_POSTGRES_DB", "test_warehouse_db")
 
-    BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "20"))
+    BATCH_SIZE: int = int(os.getenv("BATCH_SIZE", "1000"))
     MAX_WORKERS: int = int(os.getenv("MAX_WORKERS", "4"))

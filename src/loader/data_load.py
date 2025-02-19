@@ -10,6 +10,7 @@ from src.connection_manager import ConnectionManager
 from src.metrics.pipeline_metrics import PipelineMetrics
 from src.recover.recovery_manager import RecoveryManager
 from src.tracker.metadata_tracker import MetadataTracker
+from src.tracker.batch_tracker import BatchTracker
 from .value_formatter import ValueFormatter
 from .batch_processor import BatchProcessor
 from .serializer import RecordSerializer
@@ -33,10 +34,11 @@ class DataLoader:
         self.value_formatter = ValueFormatter()
         self.batch_processor = BatchProcessor(self.value_formatter)
         self.serializer = RecordSerializer()
+        self.batch_tracker = BatchTracker()
 
     async def initialize(self):
-        """Verify connection pool exists"""
-        ConnectionManager.get_pool()  # Will raise if pool not initialized
+        """Initialize the data loader and its components"""
+        await self.batch_tracker.initialize()
 
     async def close(self):
         """Nothing to close as we're using shared connection pool"""
@@ -86,16 +88,10 @@ class DataLoader:
             # Calculate file size using StringIO buffer
             buffer = StringIO()
             df.write_csv(buffer)
-            metrics.file_size_bytes = len(buffer.getvalue().encode('utf-8'))
-            metrics.file_size_bytes = len(df.write_csv().encode('utf-8'))
+            metrics.file_size_bytes = len(buffer.getvalue().encode("utf-8"))
             metrics.processing_status = "COMPLETED"
 
-            self.logger.info(
-                f"Successfully loaded {
-                    total_processed} rows into {table_name} "
-                f"({inserts} inserts, {updates} updates)"
-            )
-
+            # Remove duplicate log message - keep only one
             self.logger.info(
                 f"Successfully loaded {
                     total_processed} rows into {table_name} "
@@ -125,66 +121,154 @@ class DataLoader:
         file_name: str,
         batch_id: str,
         merge_strategy: str = "MERGE",
-    ) -> None:
+    ) -> tuple[int, int, int]:
         """Load data into the target table with the specified merge strategy"""
-        self.logger.info(f"Starting load_data for table {
-                         table_name} with batch_id {batch_id}")
+        self.logger.info(
+            f"Starting load_data for table {
+                table_name} with batch_id {batch_id}"
+        )
 
         async with ConnectionManager.get_pool().acquire() as conn:
             columns = df.columns
             schema = await ConnectionManager.get_column_types(table_name)
             records = df.to_dicts()
 
-            formatted_records = await self.batch_processor.process_batch(
-                conn=conn,
-                table_name=table_name,
-                columns=columns,
-                records=records,
-                column_types=schema
-            )
             total_processed = 0
-            inserts = 0
-            updates = 0
-            for record in formatted_records:
-                existing_record = await conn.fetchrow(
-                    f"SELECT * FROM {table_name} WHERE {primary_key} = ${
-                        1}::{schema.get(primary_key, 'text')}",
-                    record[primary_key],
+            total_inserts = 0
+            total_updates = 0
+
+            total_batches = (len(records) + self.batch_size -
+                             1) // self.batch_size
+
+            for batch_number, i in enumerate(
+                range(0, len(records), self.batch_size), 1
+            ):
+                batch_records = records[i: i + self.batch_size]
+
+                # Start batch tracking
+                await self.batch_tracker.start_batch(
+                    batch_id=batch_id,
+                    table_name=table_name,
+                    file_name=file_name,
+                    batch_number=batch_number,
+                    total_batches=total_batches,
+                    records_in_batch=len(batch_records),
                 )
 
-                sql = self.batch_processor.generate_sql(
-                    table_name, columns, schema, merge_strategy, primary_key
-                )
-
-                values = [record[col] for col in columns]
                 try:
-                    await conn.execute(sql, *values)
-                    total_processed += 1
-                    if existing_record:
-                        updates += 1
-                    else:
-                        inserts += 1
+                    batch_processed = 0
+                    batch_inserts = 0
+                    batch_updates = 0
+                    batch_failed = 0
+
+                    # Format the batch records
+                    formatted_records = await self.batch_processor.process_batch(
+                        conn,
+                        table_name,
+                        columns,
+                        batch_records,
+                        schema,
+                        batch_number,
+                        total_batches,
+                    )
+
+                    for record in formatted_records:
+                        existing_record = await conn.fetchrow(
+                            f"SELECT * FROM {table_name} WHERE {primary_key} = ${
+                                1}::{schema.get(primary_key, 'text')}",
+                            record[primary_key],
+                        )
+
+                        sql = self.batch_processor.generate_sql(
+                            table_name, columns, schema, merge_strategy, primary_key
+                        )
+
+                        values = [record[col] for col in columns]
+                        try:
+                            await conn.execute(sql, *values)
+                            batch_processed += 1
+
+                            # Log the operation details
+                            operation_type = "UPDATE" if existing_record else "INSERT"
+                            self.logger.info(
+                                f"Batch {batch_id}: {
+                                    operation_type} record in {table_name} - "
+                                f"PK: {record[primary_key]} - "
+
+                            )
+
+                            if existing_record:
+                                batch_updates += 1
+                            else:
+                                batch_inserts += 1
+
+                            # Record the change
+                            await self.metadata_tracker.record_change(
+                                conn,
+                                table_name,
+                                "UPDATE" if existing_record else "INSERT",
+                                record,
+                                batch_id,
+                                primary_key,
+                                file_name,
+                                old_record=(
+                                    dict(
+                                        existing_record) if existing_record else None
+                                ),
+                            )
+
+                        except Exception as e:
+                            batch_failed += 1
+                            self.logger.error(
+                                f"Batch {batch_id}: Error loading record into {
+                                    table_name} - "
+                                f"PK: {record[primary_key]} - "
+                                f"Values: {values} - "
+                                f"Error: {str(e)}"
+                            )
+                            self.logger.error(f"SQL: {sql}")
+                            raise
+
+                    # Complete batch tracking
+                    await self.batch_tracker.complete_batch(
+                        batch_id=batch_id,
+                        batch_number=batch_number,
+                        records_processed=batch_processed,
+                        records_inserted=batch_inserts,
+                        records_updated=batch_updates,
+                        records_failed=batch_failed,
+                    )
+
+                    # Update totals
+                    total_processed += batch_processed
+                    total_inserts += batch_inserts
+                    total_updates += batch_updates
+
+                    self.logger.info(
+                        f"Completed batch {batch_number}/{total_batches}: "
+                        f"Processed {batch_processed} records "
+                        f"({batch_inserts} inserts, {batch_updates} updates)"
+                    )
+
                 except Exception as e:
-                    self.logger.error(f"Error executing SQL: {str(e)}")
-                    self.logger.error(f"SQL: {sql}")
-                    self.logger.error(f"Values: {values}")
+                    # Record batch failure
+                    await self.batch_tracker.complete_batch(
+                        batch_id=batch_id,
+                        batch_number=batch_number,
+                        records_processed=batch_processed,
+                        records_inserted=batch_inserts,
+                        records_updated=batch_updates,
+                        records_failed=len(batch_records) - batch_processed,
+                        error_message=str(e),
+                    )
                     raise
 
-                # Record the change
-                await self.metadata_tracker.record_change(
-                    conn,
-                    table_name,
-                    "UPDATE" if existing_record else "INSERT",
-                    record,
-                    batch_id,
-                    primary_key,
-                    file_name,
-                    old_record=dict(
-                        existing_record) if existing_record else None,
-                )
-
-            self.logger.info(f"Processed {total_processed} records")
-            return total_processed, inserts, updates
+            self.logger.info(
+                f"Completed loading {
+                    total_processed} records into {table_name} "
+                f"({total_inserts} inserts, {total_updates} updates)"
+            )
+            return total_processed, total_inserts, total_updates
 
     def serialize_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
         """Delegate serialization to RecordSerializer"""

@@ -126,7 +126,9 @@ class DataValidator:
                                 "column": col,
                             }
                         )
-                elif "[]" in pg_type:  # Array type
+                elif (
+                    "[]" in pg_type
+                ):  # Only validate as array if explicitly defined as array type
                     try:
                         # Convert set notation to array notation
                         df_with_array = df.with_columns(
@@ -212,15 +214,38 @@ class DataValidator:
             return None
 
     def _validate_array(self, value: str, col: str) -> str:
-        """Validate PostgreSQL array notation"""
+        """Validate and convert array notation from various formats"""
         try:
             if isinstance(value, str):
-                # For PostgreSQL arrays like {1,2,3}, just validate the format
+                # Handle Python list string format (e.g. "['email', 'phone']")
+                if value.startswith("[") and value.endswith("]"):
+                    # Convert Python list string to PostgreSQL array format
+                    try:
+                        # Safely evaluate the string as a Python literal
+                        import ast
+
+                        python_list = ast.literal_eval(value)
+                        # Convert to PostgreSQL array format
+                        pg_array = (
+                            "{" + ",".join(str(item) for item in python_list) + "}"
+                        )
+                        return pg_array
+                    except (ValueError, SyntaxError):
+                        return None
+
+                # Handle PostgreSQL array format (e.g. "{email,phone}")
                 if value.startswith("{") and value.endswith("}"):
-                    # The format is correct, return as is
                     return value
-                # If it's not in PostgreSQL array format, return None to mark as invalid
-                return None
+
+                # Handle comma-separated string (e.g. "email,phone")
+                if "," in value:
+                    items = [item.strip() for item in value.split(",")]
+                    return "{" + ",".join(items) + "}"
+
+                # Handle single value
+                if value.strip():
+                    return "{" + value.strip() + "}"
+
             return None
         except Exception:
             return None

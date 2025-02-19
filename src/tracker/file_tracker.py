@@ -36,25 +36,28 @@ class FileTracker:
         status: str,
         rows_processed: int,
         error_message: Optional[str] = None,
+        batch_id: Optional[str] = None,
     ):
         async with ConnectionManager.get_pool().acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO processed_files (
-                    file_name, file_hash, status, rows_processed, error_message,
-                    processed_at, updated_at
-                ) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT (file_name)
-                DO UPDATE SET
-                    status = EXCLUDED.status,
-                    rows_processed = EXCLUDED.rows_processed,
-                    error_message = EXCLUDED.error_message,
-                    processed_at = CURRENT_TIMESTAMP,
-                    updated_at = CURRENT_TIMESTAMP
-                """,
+                        INSERT INTO processed_files (
+                            file_name, file_hash, status, rows_processed, error_message,
+                            batch_id, processed_at, updated_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ON CONFLICT (file_name)
+                        DO UPDATE SET
+                            status = EXCLUDED.status,
+                            rows_processed = EXCLUDED.rows_processed,
+                            error_message = EXCLUDED.error_message,
+                            batch_id = EXCLUDED.batch_id,
+                            processed_at = CURRENT_TIMESTAMP,
+                            updated_at = CURRENT_TIMESTAMP
+                        """,
                 file_name,
                 file_hash,
                 status,
                 rows_processed,
                 error_message,
+                batch_id,
             )
