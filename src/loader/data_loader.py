@@ -54,7 +54,7 @@ class DataLoader:
     ) -> None:
         """Compare and track changes between old and new data."""
         # Serialize the new data before JSON encoding
-        serialized_new_data = self._serialize_record(new_data)
+        serialized_new_data = self.serialize_record(new_data)
 
         # Fetch the old record
         old_record = await conn.fetchrow(
@@ -65,7 +65,7 @@ class DataLoader:
         if old_record:
             # Convert old record to dict and serialize it
             old_data = dict(old_record)
-            serialized_old_data = self._serialize_record(old_data)
+            serialized_old_data = self.serialize_record(old_data)
 
             await conn.execute(
                 """
@@ -166,7 +166,7 @@ class DataLoader:
 
         return value
 
-    def _serialize_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
+    def serialize_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
         """Convert record values to JSON-serializable format"""
         serialized = {}
         for key, value in record.items():
@@ -175,53 +175,6 @@ class DataLoader:
             else:
                 serialized[key] = value
         return serialized
-
-    async def _record_change(
-        self,
-        conn,
-        table_name: str,
-        change_type: str,
-        new_record: dict,
-        batch_id: str,
-        primary_key: str,
-        file_name: str,
-        old_record: dict = None,
-    ) -> None:
-        """Record a change in the change_history table"""
-        try:
-            # Serialize records before JSON encoding
-            serialized_new = self._serialize_record(new_record)
-            serialized_old = self._serialize_record(old_record) if old_record else None
-
-            await conn.execute(
-                """
-                INSERT INTO change_history (
-                    table_name, 
-                    primary_key_column, 
-                    primary_key_value,
-                    column_name,
-                    old_value,
-                    new_value,
-                    change_type,
-                    file_name,
-                    batch_id
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                """,
-                table_name,
-                primary_key,
-                str(serialized_new[primary_key]),
-                "*",  # Use "*" to indicate entire row change
-                json.dumps(serialized_old) if serialized_old else None,
-                json.dumps(serialized_new),
-                change_type,
-                file_name,
-                batch_id,
-            )
-        except Exception as e:
-            self.logger.error(
-                f"Error recording change history for {table_name}: {str(e)}"
-            )
-            raise
 
     def get_type_cast(self, col: str) -> str:
         """Get PostgreSQL type cast for a column based on its schema type."""
@@ -380,7 +333,7 @@ class DataLoader:
                     await conn.execute(update_sql, *values)
 
                     # Record the change with correct old and new values
-                    await self._record_change(
+                    await self.metadata_tracker.record_change(
                         conn,
                         table_name,
                         "UPDATE",
@@ -432,7 +385,7 @@ class DataLoader:
             else:
                 change_type = merge_strategy
 
-            await self._record_change(
+            await self.metadata_tracker.record_change(
                 conn,
                 table_name,
                 change_type,
@@ -564,7 +517,7 @@ class DataLoader:
                     await conn.execute(update_sql, *values)
 
                     # Record the change
-                    await self._record_change(
+                    await self.metadata_tracker.record_change(
                         conn,
                         table_name,
                         "UPDATE",
@@ -587,7 +540,7 @@ class DataLoader:
                     values = [record[col] for col in columns]
                     await conn.execute(insert_sql, *values)
 
-                    await self._record_change(
+                    await self.metadata_tracker.record_change(
                         conn,
                         table_name,
                         "INSERT",
@@ -628,7 +581,7 @@ class DataLoader:
                         values.extend(record[col] for col in non_pk_columns)
                         await conn.execute(update_sql, *values)
 
-                        await self._record_change(
+                        await self.metadata_tracker.record_change(
                             conn,
                             table_name,
                             "UPDATE",
@@ -648,7 +601,7 @@ class DataLoader:
                         values = [record[col] for col in columns]
                         await conn.execute(insert_sql, *values)
 
-                        await self._record_change(
+                        await self.metadata_tracker.record_change(
                             conn,
                             table_name,
                             "INSERT",

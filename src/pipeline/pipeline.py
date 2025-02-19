@@ -46,6 +46,11 @@ class Pipeline:
         self.data_loader = DataLoader(
             config, self.metadata_tracker, self.recovery_manager
         )
+        self.data_loader = DataLoader(
+            config, self.metadata_tracker, self.recovery_manager
+        )
+        # Set data_loader in metadata_tracker
+        self.metadata_tracker.set_data_loader(self.data_loader)
         self.recovery_worker = RecoveryWorker(
             config, self.recovery_manager, self.data_loader
         )
