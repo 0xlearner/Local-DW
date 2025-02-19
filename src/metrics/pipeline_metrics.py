@@ -35,25 +35,26 @@ class MetricsTracker:
         async with ConnectionManager.get_pool().acquire() as conn:
             await conn.execute(
                 """
-                    INSERT INTO pipeline_metrics (
-                        file_name, table_name, batch_id, start_time, end_time,
-                        processing_status, rows_processed, rows_inserted,
-                        rows_updated, rows_failed, file_size_bytes,
-                        error_message
-                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-                    """,
+                INSERT INTO pipeline_metrics (
+                    file_name, table_name, batch_id, start_time, end_time,
+                    processing_status, rows_processed, rows_inserted,
+                    rows_updated, rows_failed, file_size_bytes,
+                    error_message, load_duration_seconds
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                """,
                 metrics.file_name,
                 metrics.table_name,
                 metrics.batch_id,
                 metrics.start_time,
-                metrics.end_time or datetime.now(),
+                metrics.end_time,
                 metrics.processing_status,
-                metrics.rows_processed,
-                metrics.rows_inserted,
-                metrics.rows_updated,
-                metrics.rows_failed,
-                metrics.file_size_bytes,
+                metrics.rows_processed or 0,  # Use 0 instead of null
+                metrics.rows_inserted or 0,
+                metrics.rows_updated or 0,
+                metrics.rows_failed or 0,
+                metrics.file_size_bytes or 0,
                 metrics.error_message,
+                metrics.load_duration_seconds or 0,
             )
 
     async def get_metrics_summary(self, table_name: Optional[str] = None) -> Dict[str, Any]:

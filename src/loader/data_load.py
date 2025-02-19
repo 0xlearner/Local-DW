@@ -1,5 +1,6 @@
 from typing import Dict, Any
 from datetime import datetime
+from io import StringIO
 
 import polars as pl
 
@@ -69,7 +70,7 @@ class DataLoader:
 
         try:
             # Load the data using the data loader
-            rows_processed = await self.load_data(
+            total_processed, inserts, updates = await self.load_data(
                 df=df,
                 table_name=table_name,
                 primary_key=primary_key,
@@ -79,19 +80,26 @@ class DataLoader:
             )
 
             # Update metrics
-            metrics.rows_processed = rows_processed
-            if merge_strategy == "INSERT":
-                metrics.rows_inserted = rows_processed
-            elif merge_strategy == "UPDATE":
-                metrics.rows_updated = rows_processed
-            else:  # MERGE
-                # For MERGE, we don't know the exact split between inserts and updates
-                # This information should come from the metadata tracker
-                metrics.rows_merged = rows_processed
+            metrics.rows_processed = total_processed
+            metrics.rows_inserted = inserts
+            metrics.rows_updated = updates
+            # Calculate file size using StringIO buffer
+            buffer = StringIO()
+            df.write_csv(buffer)
+            metrics.file_size_bytes = len(buffer.getvalue().encode('utf-8'))
+            metrics.file_size_bytes = len(df.write_csv().encode('utf-8'))
+            metrics.processing_status = "COMPLETED"
 
             self.logger.info(
-                f"Successfully loaded {rows_processed} rows into {table_name} "
-                f"using {merge_strategy} strategy"
+                f"Successfully loaded {
+                    total_processed} rows into {table_name} "
+                f"({inserts} inserts, {updates} updates)"
+            )
+
+            self.logger.info(
+                f"Successfully loaded {
+                    total_processed} rows into {table_name} "
+                f"({inserts} inserts, {updates} updates)"
             )
 
         except Exception as e:
@@ -104,9 +112,10 @@ class DataLoader:
 
         finally:
             # Record timing information
-            end_time = datetime.now()
+            metrics.end_time = datetime.now()
             metrics.load_duration_seconds = (
-                end_time - start_time).total_seconds()
+                metrics.end_time - start_time
+            ).total_seconds()
 
     async def load_data(
         self,
@@ -134,6 +143,8 @@ class DataLoader:
                 column_types=schema
             )
             total_processed = 0
+            inserts = 0
+            updates = 0
             for record in formatted_records:
                 existing_record = await conn.fetchrow(
                     f"SELECT * FROM {table_name} WHERE {primary_key} = ${
@@ -149,6 +160,10 @@ class DataLoader:
                 try:
                     await conn.execute(sql, *values)
                     total_processed += 1
+                    if existing_record:
+                        updates += 1
+                    else:
+                        inserts += 1
                 except Exception as e:
                     self.logger.error(f"Error executing SQL: {str(e)}")
                     self.logger.error(f"SQL: {sql}")
@@ -169,6 +184,7 @@ class DataLoader:
                 )
 
             self.logger.info(f"Processed {total_processed} records")
+            return total_processed, inserts, updates
 
     def serialize_record(self, record: Dict[str, Any]) -> Dict[str, Any]:
         """Delegate serialization to RecordSerializer"""

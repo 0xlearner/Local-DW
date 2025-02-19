@@ -66,6 +66,7 @@ class InfrastructureManager:
                     rows_failed INTEGER DEFAULT 0,
                     file_size_bytes BIGINT,
                     error_message TEXT,
+                    load_duration_seconds FLOAT DEFAULT 0.0,
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
 

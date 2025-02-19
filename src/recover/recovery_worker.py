@@ -3,7 +3,7 @@ import asyncio
 import asyncpg
 
 from src.config import Config
-from src.loader.data_loader import DataLoader
+from src.loader.data_load import DataLoader
 from src.recover.recovery_manager import RecoveryManager
 
 from src.logger import setup_logger
@@ -70,7 +70,8 @@ class RecoveryWorker:
                 if self.running:
                     logger.error(f"Error in recovery worker: {str(e)}")
                     try:
-                        await asyncio.sleep(5)  # Reduced sleep time for testing
+                        # Reduced sleep time for testing
+                        await asyncio.sleep(5)
                     except asyncio.CancelledError:
                         break
 
