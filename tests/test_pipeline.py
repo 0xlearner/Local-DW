@@ -13,11 +13,12 @@ from src.pipeline.data_pipeline import Pipeline
 async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test_db):
     """Test pipeline with real data from local directory"""
     pipeline = None
-    target_table = "raw_real_data"
+    target_table = "raw_listings"
     local_csv_path = "/app/data/listings.csv"
     s3_file_name = "listings.csv.gz"
     batch_id = None
-    temp_table = None  # Define temp_table here
+    temp_table = None
+    current_view = None  # Add this line
 
     try:
         # Read and compress the local CSV file
@@ -68,8 +69,9 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
             target_table=target_table,
         )
 
-        # Define temp_table after we have batch_id
+        # Define tables after we have batch_id
         temp_table = f"temp_{target_table}_{batch_id.replace('-', '_')}"
+        current_view = f"stg_{target_table}_current"  # Add this line
 
         # Verify results
         async with pg_pool.acquire() as conn:
@@ -186,9 +188,12 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
         except:
             pass
 
-        # Clean up the temp table
-        if temp_table:  # Only attempt to drop if temp_table was defined
+        # Clean up the database objects
+        if temp_table:
             async with pg_pool.acquire() as conn:
+                # Drop view first, then table
+                if current_view:
+                    await conn.execute(f"DROP VIEW IF EXISTS {current_view}")
                 await conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
 
 

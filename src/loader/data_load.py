@@ -1,8 +1,5 @@
-import io
 from datetime import datetime
-from typing import Any, Dict
 
-import asyncpg
 import polars as pl
 
 from src.config import Config
@@ -46,9 +43,7 @@ class DataLoader:
         batch_id: str,
         file_name: str,
     ) -> int:
-        """
-        Bulk load data into a timestamped temp table using COPY command
-        """
+        """Bulk load data into a temp table using COPY command"""
         # Handle null and NaN values separately for numeric and non-numeric columns
         expressions = []
         for col in df.columns:
@@ -73,9 +68,11 @@ class DataLoader:
         df = df.with_columns(expressions)
 
         temp_table = f"temp_{table_name}_{batch_id.replace('-', '_')}"
+        current_view = f"stg_{table_name}_current"
 
         async with ConnectionManager.get_pool().acquire() as conn:
             try:
+
                 # Get schema first
                 schema = await self.metadata_tracker.get_table_schema(table_name)
                 if not schema:
@@ -93,13 +90,14 @@ class DataLoader:
                 )
 
                 # Create temp table
-                create_table_sql = self._generate_create_table_sql(temp_table, schema)
+                create_table_sql = self._generate_create_table_sql(
+                    temp_table, schema)
                 await conn.execute(create_table_sql)
 
                 # Register temp table
                 await conn.execute(
                     """
-                    INSERT INTO temp_tables_registry 
+                    INSERT INTO temp_tables_registry
                     (table_name, original_table, batch_id)
                     VALUES ($1, $2, $3)
                     """,
@@ -133,16 +131,54 @@ class DataLoader:
                             total_rows += len(chunk)
 
                     self.logger.info(
-                        f"Successfully loaded {total_rows} records into {temp_table}"
+                        f"Successfully loaded {
+                            total_rows} records into {temp_table}"
                     )
-                    return total_rows
+
+                    # Update the current view in separate statements
+                    try:
+                        # First drop the existing view if it exists
+                        await conn.execute(f"DROP VIEW IF EXISTS {current_view}")
+
+                        # Create the new view - note we're using string formatting here
+                        create_view_sql = f"""
+                            CREATE VIEW {current_view} AS
+                            SELECT * FROM {temp_table}
+                            WHERE _batch_id = (
+                                SELECT batch_id
+                                FROM temp_tables_registry
+                                WHERE original_table = '{table_name}'
+                                AND status = 'ACTIVE'
+                                ORDER BY created_at DESC
+                                LIMIT 1
+                            )
+                        """
+                        await conn.execute(create_view_sql)
+
+                        view_count = await conn.fetchval(
+                            f"""
+                            SELECT COUNT(*) FROM {current_view}
+                        """
+                        )
+
+                        self.logger.info(
+                            f"Successfully created view {current_view} with {
+                                view_count} records from {temp_table}"
+                        )
+                        return total_rows
+
+                    except Exception as e:
+                        self.logger.error(
+                            f"Error creating view {current_view}: {str(e)}"
+                        )
+                        raise
 
                 except Exception as e:
                     self.logger.error(f"Bulk copy failed: {str(e)}")
                     await conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
                     await conn.execute(
                         """
-                        UPDATE temp_tables_registry 
+                        UPDATE temp_tables_registry
                         SET status = 'FAILED'
                         WHERE table_name = $1
                         """,
@@ -155,7 +191,7 @@ class DataLoader:
                 await conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
                 await conn.execute(
                     """
-                    UPDATE temp_tables_registry 
+                    UPDATE temp_tables_registry
                     SET status = 'FAILED'
                     WHERE table_name = $1
                     """,
@@ -218,15 +254,12 @@ class DataLoader:
             metrics.file_size_bytes = len(df.write_csv().encode("utf-8"))
             metrics.processing_status = "COMPLETED"
 
-            self.logger.info(
-                f"Successfully loaded {total_processed} rows into temp table for {table_name}"
-            )
-
         except Exception as e:
             metrics.error_message = str(e)
             metrics.processing_status = "FAILED"
             self.logger.error(
-                f"Error loading data into temp table for {table_name}: {str(e)}",
+                f"Error loading data into temp table for {
+                    table_name}: {str(e)}",
                 exc_info=True,
             )
             raise
