@@ -1,16 +1,21 @@
-import asyncpg
 from typing import Dict, Optional
+
+import asyncpg
+
 from src.logger import setup_logger
 
 
 class ConnectionManager:
     _instance = None
     _pool: Optional[asyncpg.Pool] = None
+    _logger = None
 
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super(ConnectionManager, cls).__new__(cls)
-            cls._instance.logger = setup_logger("connection_manager")
+            cls._logger = setup_logger(
+                "connection_manager"
+            )  # Move logger to class level
         return cls._instance
 
     @classmethod
@@ -19,43 +24,51 @@ class ConnectionManager:
         conn_params: Dict[str, str],
         min_size: int = 2,
         max_size: int = 10,
-        command_timeout: int = 60
+        command_timeout: int = 60,
     ) -> None:
         """Initialize the connection pool with given parameters"""
+        if not cls._logger:  # Ensure logger exists
+            cls._logger = setup_logger("connection_manager")
+
         if cls._pool is not None:
-            cls._instance.logger.warning("Pool already initialized")
+            cls._logger.warning("Pool already initialized")
             return
 
         cls._pool = await asyncpg.create_pool(
             **conn_params,
             min_size=min_size,
             max_size=max_size,
-            command_timeout=command_timeout
+            command_timeout=command_timeout,
         )
-        cls._instance.logger.info("Connection pool initialized successfully")
+        cls._logger.info("Connection pool initialized successfully")  # Use class logger
 
     @classmethod
     def get_pool(cls) -> asyncpg.Pool:
         """Get the connection pool instance"""
         if cls._pool is None:
             raise RuntimeError(
-                "Connection pool not initialized. Call initialize() first")
+                "Connection pool not initialized. Call initialize() first"
+            )
         return cls._pool
 
     @classmethod
     async def close(cls) -> None:
         """Close the connection pool"""
+        if not cls._logger:  # Ensure logger exists
+            cls._logger = setup_logger("connection_manager")
+
         if cls._pool:
             await cls._pool.close()
             cls._pool = None
-            cls._instance.logger.info("Connection pool closed")
+            cls._logger.info("Connection pool closed")
 
     @classmethod
     async def get_connection(cls) -> asyncpg.Connection:
         """Get a connection from the pool"""
         if cls._pool is None:
             raise RuntimeError(
-                "Connection pool not initialized. Call initialize() first")
+                "Connection pool not initialized. Call initialize() first"
+            )
         return await cls._pool.acquire()
 
     @classmethod

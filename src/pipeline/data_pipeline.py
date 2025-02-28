@@ -1,24 +1,24 @@
-import uuid
-from datetime import datetime
-from typing import List
 import asyncio
+import uuid
+from datetime import datetime, timedelta
+from typing import List
 
-
-from src.config import Config
 from src.client.s3_client import S3Client
-from src.schema_inferrer.schema_infer import SchemaInferrer
+from src.config import Config
 from src.connection_manager import ConnectionManager
 from src.loader.data_load import DataLoader
 from src.logger import setup_logger
 from src.metrics.pipeline_metrics import MetricsTracker, PipelineMetrics
 from src.recover.recovery_manager import RecoveryManager
 from src.recover.recovery_worker import RecoveryWorker
+from src.reporting.load_report import LoadReportGenerator
+from src.schema_inferrer.schema_infer import SchemaInferrer
 from src.tracker.file_tracker import FileTracker
 from src.tracker.metadata_tracker import MetadataTracker
 from src.validator.data_validation import DataValidator
-from src.reporting.load_report import LoadReportGenerator
-from .components.infrastructure_manager import InfrastructureManager
+
 from .components.file_processor import FileProcessor
+from .components.infrastructure_manager import InfrastructureManager
 from .components.recovery_coordinator import RecoveryCoordinator
 
 
@@ -27,6 +27,8 @@ class Pipeline:
         self.config = config
         self.logger = setup_logger("pipeline")
         self._initialized = False
+        self.infrastructure_manager = InfrastructureManager()
+        self.cleanup_task = None
 
         # Initialize connection management
         self.conn_params = {
@@ -88,14 +90,26 @@ class Pipeline:
         await self.metadata_tracker.initialize()
         await self.recovery_manager.initialize()
         await self.metrics_tracker.initialize()
-        await self.file_tracker.initialize()
         await self.report_generator.initialize()
 
         # Start recovery process
         await self.recovery_coordinator.start_recovery()
 
+        # Start cleanup task
+        self.cleanup_task = asyncio.create_task(self._periodic_cleanup())
+
         self._initialized = True
         self.logger.info("Pipeline initialization completed successfully")
+
+    async def _periodic_cleanup(self):
+        """Run periodic cleanup of temp tables"""
+        while True:
+            try:
+                # Run cleanup every 24 hours
+                await asyncio.sleep(24 * 60 * 60)  # 24 hours in seconds
+                await self.infrastructure_manager.cleanup_temp_tables(retention_days=90)
+            except Exception as e:
+                self.logger.error(f"Error in periodic cleanup: {str(e)}")
 
     async def _handle_processing_error(
         self,
@@ -159,10 +173,9 @@ class Pipeline:
         self,
         file_name: str,
         primary_key: str,
-        merge_strategy: str,
         target_table: str = None,
     ) -> str:
-        """Process a single file with the specified merge strategy"""
+        """Process a single file and load into temp table"""
         batch_id = str(uuid.uuid4())
         table_name = target_table or self._get_table_name(file_name)
         csv_df, file_hash, schema = await self.file_processor.process_file(file_name)
@@ -177,54 +190,10 @@ class Pipeline:
         try:
             # Check for duplicate processing
             if await self.file_tracker.is_file_processed(file_name, file_hash):
-                self.logger.info(
-                    f"File {file_name} already processed, skipping")
+                self.logger.info(f"File {file_name} already processed, skipping")
                 return batch_id
 
-            # Validate schema compatibility if table exists
-            async with ConnectionManager.get_pool().acquire() as conn:
-                table_exists = await conn.fetchval(
-                    """
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables
-                        WHERE table_name = $1
-                    )
-                    """,
-                    table_name,
-                )
-
-                if table_exists:
-                    # Validate schema compatibility
-                    is_compatible = (
-                        await self.schema_inferrer.validate_schema_compatibility(
-                            table_name, schema
-                        )
-                    )
-                    if not is_compatible:
-                        raise ValueError(
-                            f"Schema doesn't exist for table {
-                                table_name}"
-                        )
-                else:
-                    # Create table with inferred schema
-                    await self.schema_inferrer.create_table_if_not_exists(
-                        table_name, schema, primary_key
-                    )
-                    self.logger.info(f"Created table: {table_name}")
-
-            # Validate data before loading
-            if not self.data_validator.validate_data(csv_df, schema):
-                validation_errors = self.data_validator.validation_errors
-                self.logger.error(
-                    f"Data validation failed for {
-                        file_name}: {validation_errors}"
-                )
-                raise ValueError(
-                    f"Data validation failed: {
-                        validation_errors}"
-                )
-
-            # Load the data using the enhanced data loader
+            # Load the data into temp table
             metrics.rows_processed = len(csv_df)
             await self.data_loader.load_data_with_tracking(
                 csv_df,
@@ -232,33 +201,11 @@ class Pipeline:
                 primary_key,
                 file_name,
                 batch_id,
-                merge_strategy,
                 metrics,
                 schema,
             )
 
-            # Monitor batch processing status
-            final_status = await self.monitor_batch_processing(batch_id)
-
-            # Log final processing status
-            if final_status["summary"]["overall_status"] == "COMPLETED":
-                self.logger.info(
-                    f"File processing completed successfully. "
-                    f"Processed {final_status['summary']
-                                 ['total_records_processed']} records "
-                    f"in {final_status['summary']
-                          ['completed_batches']} batches"
-                )
-            elif final_status["summary"]["overall_status"] == "FAILED":
-                self.logger.error(
-                    f"File processing completed with failures. "
-                    f"Failed batches: {
-                        final_status['summary']['failed_batches']}"
-                )
-
-            # Update metrics and mark file as processed
-            metrics.end_time = datetime.now()
-            metrics.processing_status = "COMPLETED"
+            # Mark file as successfully processed
             await self.file_tracker.mark_file_processed(
                 file_name=file_name,
                 file_hash=file_hash,
@@ -267,6 +214,9 @@ class Pipeline:
                 batch_id=batch_id,
             )
 
+            self.logger.info(
+                f"Successfully processed file {file_name} with batch_id {batch_id}"
+            )
             return batch_id
 
         except Exception as e:
@@ -315,8 +265,7 @@ class Pipeline:
             )
 
             # If there are failed batches, log their errors
-            failed_batches = [b for b in status["batches"]
-                              if b["status"] == "FAILED"]
+            failed_batches = [b for b in status["batches"] if b["status"] == "FAILED"]
             for batch in failed_batches:
                 self.logger.error(
                     f"Batch {batch['batch_number']} failed: {
@@ -333,21 +282,16 @@ class Pipeline:
         self,
         file_prefix: str,
         primary_key: str,
-        merge_strategy: str = "MERGE",
         target_table: str = None,
     ) -> str:
-        """Run the pipeline with the specified merge strategy"""
+        """Run the pipeline to load data into temp table"""
         if not self._initialized:
             await self.initialize()
-
-        if merge_strategy not in ["INSERT", "UPDATE", "MERGE"]:
-            raise ValueError(f"Invalid merge strategy: {merge_strategy}")
 
         try:
             batch_id = await self.process_file(
                 file_name=file_prefix,
                 primary_key=primary_key,
-                merge_strategy=merge_strategy,
                 target_table=target_table,
             )
             self.logger.info("Pipeline completed successfully")
@@ -432,6 +376,13 @@ class Pipeline:
         """Shutdown all components in the correct order"""
         if not self._initialized:
             return
+
+        if self.cleanup_task:
+            self.cleanup_task.cancel()
+            try:
+                await self.cleanup_task
+            except asyncio.CancelledError:
+                pass
 
         await self.recovery_coordinator.stop_recovery()
         await self.data_loader.close()

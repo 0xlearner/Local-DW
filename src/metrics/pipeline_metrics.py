@@ -1,6 +1,7 @@
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
 from datetime import datetime
+from typing import Any, Dict, Optional
+
 from src.connection_manager import ConnectionManager
 from src.logger import setup_logger
 

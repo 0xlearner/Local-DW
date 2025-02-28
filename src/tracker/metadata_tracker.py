@@ -1,5 +1,6 @@
-from typing import Dict, Any, Optional
 import json
+from typing import Any, Dict, Optional
+
 from src.connection_manager import ConnectionManager
 from src.logger import setup_logger
 
@@ -18,11 +19,7 @@ class MetadataTracker:
         ConnectionManager.get_pool()  # Will raise if pool not initialized
 
     async def update_table_metadata(
-        self,
-        table_name: str,
-        file_name: str,
-        total_rows: int,
-        schema: Dict[str, Any]
+        self, table_name: str, file_name: str, total_rows: int, schema: Dict[str, Any]
     ) -> None:
         """
         Update metadata for a table including processing timestamp, row count, and schema.
@@ -58,8 +55,10 @@ class MetadataTracker:
                     json.dumps(schema),
                 )
         except Exception as e:
-            self.logger.error(f"Error updating table metadata for {
-                              table_name}: {str(e)}")
+            self.logger.error(
+                f"Error updating table metadata for {
+                              table_name}: {str(e)}"
+            )
             raise
 
     async def record_change(
@@ -78,8 +77,7 @@ class MetadataTracker:
             # Serialize records before JSON encoding
             serialized_new = self._data_loader.serialize_record(new_record)
             serialized_old = (
-                self._data_loader.serialize_record(
-                    old_record) if old_record else None
+                self._data_loader.serialize_record(old_record) if old_record else None
             )
 
             await conn.execute(
@@ -139,6 +137,50 @@ class MetadataTracker:
                 )
                 return dict(result) if result else None
         except Exception as e:
-            self.logger.error(f"Error retrieving table metadata for {
-                              table_name}: {str(e)}")
+            self.logger.error(
+                f"Error retrieving table metadata for {
+                              table_name}: {str(e)}"
+            )
             raise
+
+    async def get_table_schema(self, table_name: str) -> Dict[str, Any]:
+        """
+        Get the schema for a specific table.
+
+        Args:
+            table_name: Name of the table
+
+        Returns:
+            Dictionary containing table schema or empty dict if not found
+        """
+        try:
+            metadata = await self.get_table_metadata(table_name)
+            if metadata and "schema_snapshot" in metadata:
+                return metadata["schema_snapshot"]
+
+            # If no schema found in metadata, get it from the database
+            async with ConnectionManager.get_pool().acquire() as conn:
+                schema = {}
+                result = await conn.fetch(
+                    """
+                    SELECT column_name, data_type, is_nullable
+                    FROM information_schema.columns
+                    WHERE table_name = $1
+                    """,
+                    table_name,
+                )
+
+                for row in result:
+                    schema[row["column_name"]] = {
+                        "type": row["data_type"],
+                        "nullable": row["is_nullable"] == "YES",
+                    }
+
+                return schema
+
+        except Exception as e:
+            self.logger.error(
+                f"Error retrieving table schema for {table_name}: {str(e)}"
+            )
+            # Return empty schema if table doesn't exist yet
+            return {}

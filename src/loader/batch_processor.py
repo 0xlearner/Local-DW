@@ -1,7 +1,10 @@
+from typing import Any, Dict, List
+
 import asyncpg
-from typing import List, Dict, Any
-from .value_formatter import ValueFormatter
+
 from src.logger import setup_logger
+
+from .value_formatter import ValueFormatter
 
 
 class BatchProcessor:
@@ -56,8 +59,10 @@ class BatchProcessor:
                     raise
             formatted_records.append(formatted_record)
 
-        self.logger.info(f"Successfully formatted {
-                         len(formatted_records)} records")
+        self.logger.info(
+            f"Successfully formatted {
+                         len(formatted_records)} records"
+        )
         return formatted_records
 
     def generate_sql(
@@ -65,10 +70,8 @@ class BatchProcessor:
         table_name: str,
         columns: List[str],
         column_types: Dict[str, str],
-        merge_strategy: str,
-        primary_key: str,
     ) -> str:
-        """Generate SQL for inserting or updating records"""
+        """Generate SQL for bulk loading records into temp table"""
         placeholders = []
         for i, col in enumerate(columns, start=1):
             pg_type = column_types.get(col, "text")
@@ -83,20 +86,9 @@ class BatchProcessor:
             else:
                 placeholders.append(f"${i}::{pg_type}")
 
-        if merge_strategy == "INSERT":
-            sql = f"""
-                INSERT INTO {table_name} ({', '.join(columns)})
-                VALUES ({', '.join(placeholders)})
-            """
-        else:  # MERGE strategy
-            set_clause = ", ".join(
-                f"{col} = EXCLUDED.{col}" for col in columns if col != primary_key
-            )
-            sql = f"""
-                INSERT INTO {table_name} ({', '.join(columns)})
-                VALUES ({', '.join(placeholders)})
-                ON CONFLICT ({primary_key})
-                DO UPDATE SET {set_clause}
-            """
+        sql = f"""
+            INSERT INTO {table_name} ({', '.join(columns)})
+            VALUES ({', '.join(placeholders)})
+        """
 
         return sql

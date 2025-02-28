@@ -1,4 +1,5 @@
 import asyncpg
+
 from src.logger import setup_logger
 
 
@@ -38,19 +39,22 @@ class InfrastructureManager:
                     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
                 );
 
-                -- Processed files tracking
+                -- File processing tracking
                 CREATE TABLE IF NOT EXISTS processed_files (
                     id SERIAL PRIMARY KEY,
-                    file_name VARCHAR(255) NOT NULL,
-                    file_hash VARCHAR(64),
-                    status VARCHAR(20),
-                    rows_processed INTEGER,
+                    file_name TEXT NOT NULL,
+                    file_hash TEXT,
+                    status TEXT NOT NULL,
+                    rows_processed INTEGER NOT NULL DEFAULT 0,
                     error_message TEXT,
-                    batch_id TEXT,
+                    batch_id TEXT NOT NULL,
                     processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                    CONSTRAINT processed_files_file_name_key UNIQUE (file_name)
+                    UNIQUE(file_name, file_hash)
                 );
+
+                -- Create index on batch_id for faster lookups
+                CREATE INDEX IF NOT EXISTS idx_processed_files_batch_id 
+                ON processed_files(batch_id);
 
                 -- Pipeline metrics
                 CREATE TABLE IF NOT EXISTS pipeline_metrics (
@@ -121,6 +125,22 @@ class InfrastructureManager:
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(batch_id, batch_number)
                     );
+
+                -- Temp tables tracking
+                CREATE TABLE IF NOT EXISTS temp_tables_registry (
+                    id SERIAL PRIMARY KEY,
+                    table_name TEXT NOT NULL,
+                    original_table TEXT NOT NULL,
+                    batch_id TEXT NOT NULL,
+                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                    status TEXT DEFAULT 'ACTIVE',
+                    UNIQUE(table_name)
+                );
+
+                -- Create index for cleanup queries
+                CREATE INDEX IF NOT EXISTS idx_temp_tables_created_at 
+                ON temp_tables_registry(created_at);
             """
         )
         self.logger.info("Successfully initialized all infrastructure tables")

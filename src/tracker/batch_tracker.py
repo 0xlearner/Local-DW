@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 from typing import Optional
-from src.logger import setup_logger
+
 from src.connection_manager import ConnectionManager
+from src.logger import setup_logger
 
 
 class BatchTracker:
@@ -11,6 +12,11 @@ class BatchTracker:
     async def initialize(self):
         """Initialize the batch tracker"""
         ConnectionManager.get_pool()  # Will raise if pool not initialized
+
+    async def close(self):
+        """Cleanup resources - implemented to satisfy interface requirements"""
+        # Currently no resources to clean up, but method exists for consistency
+        pass
 
     async def start_batch(
         self,

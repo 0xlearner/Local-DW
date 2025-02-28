@@ -4,9 +4,8 @@ import asyncpg
 
 from src.config import Config
 from src.loader.data_load import DataLoader
-from src.recover.recovery_manager import RecoveryManager
-
 from src.logger import setup_logger
+from src.recover.recovery_manager import RecoveryManager
 
 logger = setup_logger("recovery_worker")
 
@@ -45,13 +44,13 @@ class RecoveryWorker:
                             job["checkpoint_data"]["schema"],
                         )
 
-                        # Update recovery status
-                        await self.recovery_manager.update_recovery_status(
+                        # Update recovery status - fixed method name
+                        await self.recovery_manager.update_recovery_point(
                             job["batch_id"], "PROCESSED"
                         )
 
                     except Exception as e:
-                        await self.recovery_manager.update_recovery_status(
+                        await self.recovery_manager.update_recovery_point(
                             job["batch_id"], "FAILED", str(e)
                         )
 

@@ -1,8 +1,10 @@
+import asyncio
 import gzip
 from io import BytesIO
 from typing import Generator
+
 import minio
-import asyncio
+
 from src.config import Config
 from src.logger import setup_logger
 

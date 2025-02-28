@@ -1,8 +1,10 @@
 import hashlib
-import polars as pl
 from typing import Tuple
-from src.logger import setup_logger
+
+import polars as pl
+
 from src.client.s3_client import S3Client
+from src.logger import setup_logger
 from src.schema_inferrer.schema_infer import SchemaInferrer
 from src.validator.data_validation import DataValidator
 

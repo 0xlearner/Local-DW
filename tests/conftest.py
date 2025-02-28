@@ -1,13 +1,14 @@
 import asyncio
-from typing import AsyncGenerator
-import pytest
-import polars as pl
 import gzip
-import os
-from minio import Minio
-import asyncpg
-from datetime import datetime
 import json
+import os
+from datetime import datetime
+from typing import AsyncGenerator
+
+import asyncpg
+import polars as pl
+import pytest
+from minio import Minio
 
 
 @pytest.fixture(scope="session")

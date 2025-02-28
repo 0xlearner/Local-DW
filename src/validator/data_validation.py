@@ -1,8 +1,9 @@
-from typing import List, Dict, Any
-import polars as pl
-from datetime import datetime
-import re
 import logging
+import re
+from datetime import datetime
+from typing import Any, Dict, List
+
+import polars as pl
 
 
 def setup_logger(name):

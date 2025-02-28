@@ -1,8 +1,9 @@
 import asyncio
+import os
+import time
+
 import asyncpg
 from minio import Minio
-import time
-import os
 
 TEST_POSTGRES_CONFIG = {
     "host": os.getenv(

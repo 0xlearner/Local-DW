@@ -1,63 +1,34 @@
 {
-  "report_generated_at": "2025-02-19T13:18:52.789866",
+  "report_generated_at": "2025-02-20T10:04:38.889549",
   "generated_by": "0xlearner",
-  "table_name": "raw_data",
+  "table_name": "raw_real_data",
   "summary": {
-    "total_files_processed": 3,
-    "total_records_processed": 100,
-    "total_inserts": 75,
-    "total_updates": 25,
+    "total_files_processed": 1,
+    "total_records_processed": 13984,
+    "total_inserts": 13984,
+    "total_updates": 0,
     "total_failures": 0,
     "file_sizes": {
-      "max": 5294,
-      "average": "3548.33"
+      "max": 29539392,
+      "average": "29539392.00"
     },
     "change_history": {
-      "INSERT": 75,
-      "UPDATE": 25
+      "INSERT": 13984
     }
   },
   "operations": [
     {
-      "file_name": "updates.csv.gz",
-      "table_name": "raw_data",
-      "batch_id": "94ef04d5-b6da-4c3d-b7b5-848bdb75b126",
-      "start_time": "2025-02-19 13:18:48.719671+00:00",
-      "end_time": "2025-02-19 13:18:52.625243+00:00",
+      "file_name": "listings.csv.gz",
+      "table_name": "raw_real_data",
+      "batch_id": "520e76f5-ca97-492b-adfd-b7f74321ea67",
+      "start_time": "2025-02-20 09:18:53.299777+00:00",
+      "end_time": "2025-02-20 10:04:38.318614+00:00",
       "processing_status": "COMPLETED",
-      "rows_processed": 25,
-      "rows_inserted": 0,
-      "rows_updated": 25,
-      "rows_failed": 0,
-      "file_size_bytes": 2672,
-      "error_message": null
-    },
-    {
-      "file_name": "new_records.csv.gz",
-      "table_name": "raw_data",
-      "batch_id": "81bf8ac9-dd7e-4345-986c-16033c179f4f",
-      "start_time": "2025-02-19 13:18:46.099824+00:00",
-      "end_time": "2025-02-19 13:18:48.555238+00:00",
-      "processing_status": "COMPLETED",
-      "rows_processed": 25,
-      "rows_inserted": 25,
+      "rows_processed": 13984,
+      "rows_inserted": 13984,
       "rows_updated": 0,
       "rows_failed": 0,
-      "file_size_bytes": 2679,
-      "error_message": null
-    },
-    {
-      "file_name": "initial_load.csv.gz",
-      "table_name": "raw_data",
-      "batch_id": "4bd08ee1-ef8d-4f85-8ef3-9af9dfd94683",
-      "start_time": "2025-02-19 13:18:39.413382+00:00",
-      "end_time": "2025-02-19 13:18:45.951765+00:00",
-      "processing_status": "COMPLETED",
-      "rows_processed": 50,
-      "rows_inserted": 50,
-      "rows_updated": 0,
-      "rows_failed": 0,
-      "file_size_bytes": 5294,
+      "file_size_bytes": 29539392,
       "error_message": null
     }
   ]

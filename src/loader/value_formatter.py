@@ -1,6 +1,8 @@
-from datetime import datetime
 import json
+import math
+from datetime import datetime
 from typing import Any, Dict
+
 from src.logger import setup_logger
 
 
@@ -9,14 +11,21 @@ class ValueFormatter:
         self.logger = setup_logger("value_formatter")
 
     def format_value(self, value: Any, col_name: str, schema: Dict[str, str]) -> Any:
-        """Format value according to column type"""
-        if value is None:
+        """Format a value based on its target PostgreSQL type"""
+        if value is None or (isinstance(value, float) and math.isnan(value)):
             return None
 
-        col_type = schema.get(col_name, "text").upper()
+        pg_type = schema[col_name].upper()
+
+        if "INT" in pg_type:
+            if isinstance(value, (int, float)):
+                if math.isnan(value):
+                    return None
+                return int(value)
+            return None
 
         # Handle array types
-        if col_type == "ARRAY" or "[]" in col_type:
+        if pg_type == "ARRAY" or "[]" in pg_type:
             if isinstance(value, str):
                 try:
                     # Handle Python list string format
@@ -55,7 +64,7 @@ class ValueFormatter:
         }
 
         for type_key, formatter in formatters.items():
-            if type_key in col_type:
+            if type_key in pg_type:
                 return formatter(value, col_name)
 
         return value
