@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List
 
 from src.client.s3_client import S3Client
@@ -190,7 +190,8 @@ class Pipeline:
         try:
             # Check for duplicate processing
             if await self.file_tracker.is_file_processed(file_name, file_hash):
-                self.logger.info(f"File {file_name} already processed, skipping")
+                self.logger.info(
+                    f"File {file_name} already processed, skipping")
                 return batch_id
 
             # Load the data into temp table
@@ -215,7 +216,8 @@ class Pipeline:
             )
 
             self.logger.info(
-                f"Successfully processed file {file_name} with batch_id {batch_id}"
+                f"Successfully processed file {
+                    file_name} with batch_id {batch_id}"
             )
             return batch_id
 
@@ -265,7 +267,8 @@ class Pipeline:
             )
 
             # If there are failed batches, log their errors
-            failed_batches = [b for b in status["batches"] if b["status"] == "FAILED"]
+            failed_batches = [b for b in status["batches"]
+                              if b["status"] == "FAILED"]
             for batch in failed_batches:
                 self.logger.error(
                     f"Batch {batch['batch_number']} failed: {

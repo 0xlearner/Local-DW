@@ -116,7 +116,7 @@ class DataLoader:
                 )
 
                 # Stream data in chunks
-                CHUNK_SIZE = 1000
+                CHUNK_SIZE = self.config.CHUNK_SIZE
                 total_rows = 0
 
                 try:

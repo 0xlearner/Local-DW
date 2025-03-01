@@ -18,7 +18,7 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
     s3_file_name = "listings.csv.gz"
     batch_id = None
     temp_table = None
-    current_view = None  # Add this line
+    current_view = None
 
     try:
         # Read and compress the local CSV file
@@ -79,13 +79,14 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
             temp_table_exists = await conn.fetchval(
                 """
                 SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
+                    SELECT FROM information_schema.tables
                     WHERE table_name = $1
                 )
                 """,
                 temp_table,
             )
-            assert temp_table_exists, f"Temp table {temp_table} was not created"
+            assert temp_table_exists, f"Temp table {
+                temp_table} was not created"
 
             # Check total rows
             db_count = await conn.fetchval(f"SELECT COUNT(*) FROM {temp_table}")
@@ -96,7 +97,7 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
             # Verify metadata columns exist and are populated
             metadata_check = await conn.fetchrow(
                 f"""
-                SELECT 
+                SELECT
                     COUNT(*) as total,
                     COUNT(DISTINCT _batch_id) as batch_ids,
                     COUNT(DISTINCT _file_name) as file_names,
@@ -133,7 +134,7 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
             # Check pipeline metrics
             metrics = await conn.fetchrow(
                 """
-                SELECT 
+                SELECT
                     rows_processed,
                     processing_status,
                     load_duration_seconds
@@ -173,7 +174,8 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
             print("\nLoad Summary:")
             print(f"Total rows processed: {metrics['rows_processed']}")
             print(
-                f"Processing duration: {metrics['load_duration_seconds']:.2f} seconds"
+                f"Processing duration: {
+                    metrics['load_duration_seconds']:.2f} seconds"
             )
             print(f"Processing status: {metrics['processing_status']}")
 
@@ -183,7 +185,8 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
 
         # Clean up test files
         try:
-            minio_client.remove_object(test_config["s3"]["bucket"], s3_file_name)
+            minio_client.remove_object(
+                test_config["s3"]["bucket"], s3_file_name)
             os.remove(compressed_path)
         except:
             pass
@@ -253,7 +256,7 @@ async def test_pipeline_performance(
         async with pg_pool.acquire() as conn:
             metrics = await conn.fetchrow(
                 """
-                SELECT 
+                SELECT
                     rows_processed,
                     load_duration_seconds,
                     processing_status
@@ -282,12 +285,14 @@ async def test_pipeline_performance(
 
         # Cleanup
         try:
-            minio_client.remove_object(test_config["s3"]["bucket"], s3_file_name)
+            minio_client.remove_object(
+                test_config["s3"]["bucket"], s3_file_name)
             os.remove(compressed_path)
         except:
             pass
 
         async with pg_pool.acquire() as conn:
             await conn.execute(
-                f"DROP TABLE IF EXISTS temp_{target_table}_{batch_id.replace('-', '_')}"
+                f"DROP TABLE IF EXISTS temp_{target_table}_{
+                    batch_id.replace('-', '_')}"
             )
