@@ -1,0 +1,12 @@
+s3_postgres_pipeline:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('DBT_HOST', 'localhost') }}"
+      port: "{{ env_var('DBT_PORT', '5432') | as_number }}"
+      user: "{{ env_var('DBT_USER', 'postgres') }}"
+      password: "{{ env_var('DBT_PASSWORD', 'postgres') }}"
+      dbname: "{{ env_var('DBT_DATABASE', 'warehouse') }}"
+      schema: "{{ env_var('DBT_SCHEMA', 'public') }}"
+      threads: "{{ env_var('DBT_THREADS', '4') | as_number }}"

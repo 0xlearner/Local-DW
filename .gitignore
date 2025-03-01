@@ -9,3 +9,4 @@ pytest.ini
 *.log
 __pycache__/
 *.gz
+.env

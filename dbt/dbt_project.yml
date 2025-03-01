@@ -1,0 +1,24 @@
+name: "s3_postgres_pipeline"
+version: "1.0.0"
+config-version: 2
+
+profile: "s3_postgres_pipeline"
+
+model-paths: ["models"]
+analysis-paths: ["analyses"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+
+target-path: "target"
+clean-targets:
+  - "target"
+  - "dbt_packages"
+
+models:
+  s3_postgres_pipeline:
+    staging:
+      +materialized: view
+    warehouse:
+      +materialized: incremental
+      +schema: warehouse
