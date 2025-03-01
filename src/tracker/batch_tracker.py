@@ -31,7 +31,7 @@ class BatchTracker:
         async with ConnectionManager.get_pool().acquire() as conn:
             result = await conn.fetchval(
                 """
-                INSERT INTO batch_processing (
+                INSERT INTO bronze.batch_processing (
                     batch_id, table_name, file_name, batch_number, total_batches,
                     records_in_batch, status
                 ) VALUES ($1, $2, $3, $4, $5, $6, 'PROCESSING')
@@ -63,7 +63,7 @@ class BatchTracker:
         async with ConnectionManager.get_pool().acquire() as conn:
             await conn.execute(
                 """
-                UPDATE batch_processing
+                UPDATE bronze.batch_processing
                 SET status = CASE WHEN $7::text IS NULL THEN 'COMPLETED' ELSE 'FAILED' END,
                     records_processed = $3,
                     records_inserted = $4,
@@ -104,7 +104,7 @@ class BatchTracker:
                     start_time,
                     end_time,
                     processing_duration_seconds
-                FROM batch_processing
+                FROM bronze.batch_processing
                 WHERE batch_id = $1
                 ORDER BY batch_number ASC
                 """,
@@ -116,9 +116,11 @@ class BatchTracker:
 
             if batches:
                 total_batches = batches[0]["total_batches"]
-                completed = sum(1 for b in batches if b["status"] == "COMPLETED")
+                completed = sum(
+                    1 for b in batches if b["status"] == "COMPLETED")
                 failed = sum(1 for b in batches if b["status"] == "FAILED")
-                in_progress = sum(1 for b in batches if b["status"] == "PROCESSING")
+                in_progress = sum(
+                    1 for b in batches if b["status"] == "PROCESSING")
 
                 summary = {
                     "total_batches": total_batches,

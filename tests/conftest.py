@@ -103,24 +103,66 @@ def compressed_csv_file(sample_csv_data, tmp_path):
     return gz_path
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture
 async def clean_test_db(test_config, pg_pool) -> AsyncGenerator[None, None]:
     """Ensure the test database is cleaned before running tests"""
+    from src.pipeline.components.infrastructure_manager import \
+        InfrastructureManager
+
     try:
+        # First initialize infrastructure
+        infrastructure_manager = InfrastructureManager()
         async with pg_pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    """
-                    DO $$
-                    DECLARE
-                        r RECORD;
-                    BEGIN
-                        FOR r IN (SELECT tablename FROM pg_tables WHERE schemaname = 'public') LOOP
-                            EXECUTE 'DROP TABLE IF EXISTS ' || quote_ident(r.tablename) || ' CASCADE';
-                        END LOOP;
-                    END $$;
-                    """
-                )
+            await infrastructure_manager.initialize_infrastructure_tables(conn)
+
+        # Then clean existing data
+        async with pg_pool.acquire() as conn:
+            await conn.execute(
+                """
+                DO $$ 
+                DECLARE
+                    r record;
+                BEGIN
+                    -- Drop all views in bronze schema
+                    FOR r IN (
+                        SELECT viewname 
+                        FROM pg_views 
+                        WHERE schemaname = 'bronze'
+                    ) LOOP
+                        EXECUTE 'DROP VIEW IF EXISTS bronze.' || quote_ident(r.viewname) || ' CASCADE';
+                    END LOOP;
+
+                    -- Drop all tables in bronze schema except infrastructure tables
+                    FOR r IN (
+                        SELECT tablename 
+                        FROM pg_tables 
+                        WHERE schemaname = 'bronze'
+                        AND tablename NOT IN (
+                            'table_metadata',
+                            'change_history',
+                            'processed_files',
+                            'pipeline_metrics',
+                            'merge_history',
+                            'recovery_points',
+                            'batch_processing',
+                            'temp_tables_registry'
+                        )
+                    ) LOOP
+                        EXECUTE 'DROP TABLE IF EXISTS bronze.' || quote_ident(r.tablename) || ' CASCADE';
+                    END LOOP;
+
+                    -- Truncate infrastructure tables
+                    TRUNCATE TABLE bronze.table_metadata CASCADE;
+                    TRUNCATE TABLE bronze.change_history CASCADE;
+                    TRUNCATE TABLE bronze.processed_files CASCADE;
+                    TRUNCATE TABLE bronze.pipeline_metrics CASCADE;
+                    TRUNCATE TABLE bronze.merge_history CASCADE;
+                    TRUNCATE TABLE bronze.recovery_points CASCADE;
+                    TRUNCATE TABLE bronze.batch_processing CASCADE;
+                    TRUNCATE TABLE bronze.temp_tables_registry CASCADE;
+                END $$;
+                """
+            )
     except Exception as e:
         print(f"Error cleaning database: {e}")
         raise

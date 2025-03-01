@@ -26,35 +26,20 @@ class LoadReportGenerator:
                     SUM(rows_failed) as total_failures,
                     MAX(file_size_bytes) as max_file_size,
                     AVG(file_size_bytes) as avg_file_size
-                FROM pipeline_metrics
+                FROM bronze.pipeline_metrics
                 WHERE ($1::text IS NULL OR table_name = $1)
                 AND processing_status = 'COMPLETED'
             """
             metrics = await conn.fetchrow(metrics_query, table_name)
 
-            changes_query = """
-                SELECT
-                    change_type,
-                    COUNT(*) as count
-                FROM change_history
-                WHERE ($1::text IS NULL OR table_name = $1)
-                GROUP BY change_type
-            """
-            changes = await conn.fetch(changes_query, table_name)
-            changes_dict = {row["change_type"]: row["count"]
-                            for row in changes}
-
             return {
                 "total_files_processed": metrics["total_files_processed"] or 0,
                 "total_records_processed": metrics["total_records_processed"] or 0,
-                "total_inserts": changes_dict.get("INSERT", 0),
-                "total_updates": changes_dict.get("UPDATE", 0),
                 "total_failures": metrics["total_failures"] or 0,
                 "file_sizes": {
                     "max": metrics["max_file_size"] or 0,
                     "average": round(metrics["avg_file_size"] or 0, 2)
                 },
-                "change_history": changes_dict
             }
 
     async def generate_report(
@@ -93,7 +78,7 @@ class LoadReportGenerator:
                     rows_failed,
                     file_size_bytes,
                     error_message
-                FROM pipeline_metrics
+                FROM bronze.pipeline_metrics
                 WHERE ($1::text IS NULL OR table_name = $1)
                 AND ($2::text[] IS NULL OR batch_id = ANY($2))
                 ORDER BY start_time DESC

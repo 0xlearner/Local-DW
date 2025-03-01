@@ -59,7 +59,7 @@ WITH source_data AS (
             COALESCE(license, ''),
             COALESCE(instant_bookable::text, '')
         )) as record_hash
-    FROM {{ source('public', 'stg_raw_listings_current') }}
+    FROM {{ source('bronze', 'stg_raw_listings_current') }}
 )
 
 SELECT *

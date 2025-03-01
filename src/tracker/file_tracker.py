@@ -20,11 +20,11 @@ class FileTracker:
         async with ConnectionManager.get_pool().acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO processed_files (
-                    file_name, file_hash, status, rows_processed, 
+                INSERT INTO bronze.processed_files (
+                    file_name, file_hash, status, rows_processed,
                     error_message, batch_id, processed_at
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-                ON CONFLICT (file_name, file_hash) 
+                ON CONFLICT (file_name, file_hash)
                 DO UPDATE SET
                     status = EXCLUDED.status,
                     rows_processed = EXCLUDED.rows_processed,
@@ -57,8 +57,8 @@ class FileTracker:
 
             result = await conn.fetchrow(
                 f"""
-                SELECT status 
-                FROM processed_files 
+                SELECT status
+                FROM bronze.processed_files
                 WHERE {where_clause}
                 AND status = 'COMPLETED'
                 """,
@@ -73,13 +73,13 @@ class FileTracker:
         async with ConnectionManager.get_pool().acquire() as conn:
             return await conn.fetchrow(
                 """
-                SELECT 
+                SELECT
                     file_name,
                     status,
                     rows_processed,
                     error_message,
                     processed_at
-                FROM processed_files
+                FROM bronze.processed_files
                 WHERE batch_id = $1
                 """,
                 batch_id,

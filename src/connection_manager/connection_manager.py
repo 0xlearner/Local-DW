@@ -31,7 +31,6 @@ class ConnectionManager:
             cls._logger = setup_logger("connection_manager")
 
         if cls._pool is not None:
-            cls._logger.warning("Pool already initialized")
             return
 
         cls._pool = await asyncpg.create_pool(
@@ -40,7 +39,8 @@ class ConnectionManager:
             max_size=max_size,
             command_timeout=command_timeout,
         )
-        cls._logger.info("Connection pool initialized successfully")  # Use class logger
+        # Use class logger
+        cls._logger.info("Connection pool initialized successfully")
 
     @classmethod
     def get_pool(cls) -> asyncpg.Pool:

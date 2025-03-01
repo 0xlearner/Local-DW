@@ -4,9 +4,11 @@ import polars as pl
 
 from src.config import Config
 from src.connection_manager import ConnectionManager
+from src.infrastructure.table_manager import TableManager
 from src.logger import setup_logger
 from src.metrics.pipeline_metrics import PipelineMetrics
 from src.recover.recovery_manager import RecoveryManager
+from src.schema_inferrer.schema_infer import SchemaInferrer
 from src.tracker.batch_tracker import BatchTracker
 from src.tracker.metadata_tracker import MetadataTracker
 
@@ -17,12 +19,15 @@ class DataLoader:
         config: Config,
         metadata_tracker: MetadataTracker,
         recovery_manager: RecoveryManager,
+        table_manager: TableManager,
     ):
         self.config = config
         self.metadata_tracker = metadata_tracker
         self.recovery_manager = recovery_manager
+        self.table_manager = table_manager
         self.logger = setup_logger("data_loader")
         self.batch_tracker = BatchTracker()
+        self.schema_inferrer = SchemaInferrer()
 
     async def close(self):
         """Cleanup resources"""
@@ -67,17 +72,15 @@ class DataLoader:
 
         df = df.with_columns(expressions)
 
-        temp_table = f"temp_{table_name}_{batch_id.replace('-', '_')}"
-        current_view = f"stg_{table_name}_current"
+        temp_table = f"bronze.temp_{table_name}_{batch_id.replace('-', '_')}"
+        current_view = f"bronze.stg_{table_name}_current"
 
         async with ConnectionManager.get_pool().acquire() as conn:
             try:
-
-                # Get schema first
                 schema = await self.metadata_tracker.get_table_schema(table_name)
                 if not schema:
                     schema = {
-                        col: self._infer_pg_type(df[col].dtype) for col in df.columns
+                        col: self.schema_inferrer.infer_pg_type(df[col].dtype) for col in df.columns
                     }
 
                 # Add metadata columns to schema
@@ -89,15 +92,13 @@ class DataLoader:
                     }
                 )
 
-                # Create temp table
-                create_table_sql = self._generate_create_table_sql(
-                    temp_table, schema)
-                await conn.execute(create_table_sql)
+                # Create the table and get the table name without schema
+                table = await self.table_manager.create_table(conn, temp_table, schema)
 
                 # Register temp table
                 await conn.execute(
                     """
-                    INSERT INTO temp_tables_registry
+                    INSERT INTO bronze.temp_tables_registry
                     (table_name, original_table, batch_id)
                     VALUES ($1, $2, $3)
                     """,
@@ -126,7 +127,10 @@ class DataLoader:
                             # Convert chunk to list of tuples for copy_records_to_table
                             records = chunk.rows()
                             await conn.copy_records_to_table(
-                                temp_table, records=records, columns=df.columns
+                                table,
+                                schema_name='bronze',
+                                records=records,
+                                columns=df.columns
                             )
                             total_rows += len(chunk)
 
@@ -135,50 +139,28 @@ class DataLoader:
                             total_rows} records into {temp_table}"
                     )
 
-                    # Update the current view in separate statements
-                    try:
-                        # First drop the existing view if it exists
-                        await conn.execute(f"DROP VIEW IF EXISTS {current_view}")
+                    await self.table_manager.create_view(
+                        conn, current_view, temp_table, batch_id
+                    )
 
-                        # Create the new view - note we're using string formatting here
-                        create_view_sql = f"""
-                            CREATE VIEW {current_view} AS
-                            SELECT * FROM {temp_table}
-                            WHERE _batch_id = (
-                                SELECT batch_id
-                                FROM temp_tables_registry
-                                WHERE original_table = '{table_name}'
-                                AND status = 'ACTIVE'
-                                ORDER BY created_at DESC
-                                LIMIT 1
-                            )
-                        """
-                        await conn.execute(create_view_sql)
+                    view_count = await conn.fetchval(
+                        f"""
+                        SELECT COUNT(*) FROM {current_view}
+                    """
+                    )
 
-                        view_count = await conn.fetchval(
-                            f"""
-                            SELECT COUNT(*) FROM {current_view}
-                        """
-                        )
-
-                        self.logger.info(
-                            f"Successfully created view {current_view} with {
-                                view_count} records from {temp_table}"
-                        )
-                        return total_rows
-
-                    except Exception as e:
-                        self.logger.error(
-                            f"Error creating view {current_view}: {str(e)}"
-                        )
-                        raise
+                    self.logger.info(
+                        f"Successfully created view {current_view} with {
+                            view_count} records from {temp_table}"
+                    )
+                    return total_rows
 
                 except Exception as e:
                     self.logger.error(f"Bulk copy failed: {str(e)}")
                     await conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
                     await conn.execute(
                         """
-                        UPDATE temp_tables_registry
+                        UPDATE bronze.temp_tables_registry
                         SET status = 'FAILED'
                         WHERE table_name = $1
                         """,
@@ -191,41 +173,13 @@ class DataLoader:
                 await conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
                 await conn.execute(
                     """
-                    UPDATE temp_tables_registry
+                    UPDATE bronze.temp_tables_registry
                     SET status = 'FAILED'
                     WHERE table_name = $1
                     """,
                     temp_table,
                 )
                 raise
-
-    def _infer_pg_type(self, dtype: str) -> str:
-        """Infer PostgreSQL type from Polars dtype"""
-        dtype = str(dtype).lower()
-        if "int" in dtype:
-            return "BIGINT"
-        elif "float" in dtype:
-            return "DOUBLE PRECISION"
-        elif "bool" in dtype:
-            return "BOOLEAN"
-        elif "datetime" in dtype:
-            return "TIMESTAMP WITH TIME ZONE"
-        elif "date" in dtype:
-            return "DATE"
-        else:
-            return "TEXT"
-
-    def _generate_create_table_sql(self, table_name: str, schema: dict) -> str:
-        """Generate CREATE TABLE SQL with metadata columns"""
-        columns_sql = ",\n    ".join(
-            f"{col_name} {col_type}" for col_name, col_type in schema.items()
-        )
-
-        return f"""
-        CREATE TABLE {table_name} (
-            {columns_sql}
-        )
-        """
 
     async def load_data_with_tracking(
         self,
@@ -235,7 +189,6 @@ class DataLoader:
         file_name: str,
         batch_id: str,
         metrics: PipelineMetrics,
-        schema: dict,
     ) -> None:
         """
         Load data with metrics tracking

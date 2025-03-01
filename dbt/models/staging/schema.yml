@@ -1,8 +1,8 @@
 version: 2
 
 sources:
-  - name: public # This is your database schema name
+  - name: bronze # This is your database schema name
     database: warehouse_db # Replace with your actual database name
-    schema: public # Using public schema
+    schema: bronze # Using public schema
     tables:
       - name: stg_raw_listings_current

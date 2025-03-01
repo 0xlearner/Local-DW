@@ -1,18 +1,43 @@
 import asyncpg
+import asyncio
 
 from src.logger import setup_logger
 
 
 class InfrastructureManager:
+    _instance = None
+    _lock = asyncio.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(InfrastructureManager, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self):
+        # Only initialize if not already initialized
+        if hasattr(self, "logger"):
+            return
         self.logger = setup_logger("infrastructure_manager")
+        self._initialized = False
 
     async def initialize_infrastructure_tables(self, conn: asyncpg.Connection):
         """Initialize all infrastructure tables required by the pipeline and its components"""
-        await conn.execute(
-            """
+        async with self._lock:
+            if self._initialized:
+                return
+
+            # Create schema if it doesn't exist
+            await conn.execute(
+                """
+                CREATE SCHEMA IF NOT EXISTS bronze;
+                """
+            )
+
+            await conn.execute(
+                """
                 -- Table metadata tracking
-                CREATE TABLE IF NOT EXISTS table_metadata (
+                CREATE TABLE IF NOT EXISTS bronze.table_metadata (
                     id SERIAL PRIMARY KEY,
                     table_name TEXT NOT NULL,
                     processed_at TIMESTAMP,
@@ -24,23 +49,8 @@ class InfrastructureManager:
                     UNIQUE(table_name)
                 );
 
-                -- Change history tracking
-                CREATE TABLE IF NOT EXISTS change_history (
-                    id SERIAL PRIMARY KEY,
-                    table_name TEXT NOT NULL,
-                    primary_key_column TEXT NOT NULL,
-                    primary_key_value TEXT NOT NULL,
-                    column_name TEXT NOT NULL,
-                    old_value TEXT,
-                    new_value TEXT,
-                    change_type TEXT NOT NULL,
-                    file_name TEXT NOT NULL,
-                    batch_id TEXT NOT NULL,
-                    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                );
-
                 -- File processing tracking
-                CREATE TABLE IF NOT EXISTS processed_files (
+                CREATE TABLE IF NOT EXISTS bronze.processed_files (
                     id SERIAL PRIMARY KEY,
                     file_name TEXT NOT NULL,
                     file_hash TEXT,
@@ -53,11 +63,11 @@ class InfrastructureManager:
                 );
 
                 -- Create index on batch_id for faster lookups
-                CREATE INDEX IF NOT EXISTS idx_processed_files_batch_id 
-                ON processed_files(batch_id);
+                CREATE INDEX IF NOT EXISTS idx_processed_files_batch_id
+                ON bronze.processed_files(batch_id);
 
                 -- Pipeline metrics
-                CREATE TABLE IF NOT EXISTS pipeline_metrics (
+                CREATE TABLE IF NOT EXISTS bronze.pipeline_metrics (
                     id SERIAL PRIMARY KEY,
                     file_name TEXT NOT NULL,
                     table_name TEXT NOT NULL,
@@ -76,7 +86,7 @@ class InfrastructureManager:
                 );
 
                 -- Merge history
-                CREATE TABLE IF NOT EXISTS merge_history (
+                CREATE TABLE IF NOT EXISTS bronze.merge_history (
                     id SERIAL PRIMARY KEY,
                     table_name TEXT NOT NULL,
                     file_name TEXT NOT NULL,
@@ -90,7 +100,7 @@ class InfrastructureManager:
                 );
 
                 -- Recovery points
-                CREATE TABLE IF NOT EXISTS recovery_points (
+                CREATE TABLE IF NOT EXISTS bronze.recovery_points (
                     id SERIAL PRIMARY KEY,
                     table_name TEXT NOT NULL,
                     file_name TEXT NOT NULL,
@@ -105,7 +115,7 @@ class InfrastructureManager:
                 );
 
                  -- Batch processing tracking
-                    CREATE TABLE IF NOT EXISTS batch_processing (
+                    CREATE TABLE IF NOT EXISTS bronze.batch_processing (
                         id SERIAL PRIMARY KEY,
                         batch_id TEXT NOT NULL,
                         table_name TEXT NOT NULL,
@@ -126,8 +136,8 @@ class InfrastructureManager:
                         UNIQUE(batch_id, batch_number)
                     );
 
-                -- Temp tables tracking
-                CREATE TABLE IF NOT EXISTS temp_tables_registry (
+                -- Create temp tables registry in bronze schema
+                CREATE TABLE IF NOT EXISTS bronze.temp_tables_registry (
                     id SERIAL PRIMARY KEY,
                     table_name TEXT NOT NULL,
                     original_table TEXT NOT NULL,
@@ -139,8 +149,11 @@ class InfrastructureManager:
                 );
 
                 -- Create index for cleanup queries
-                CREATE INDEX IF NOT EXISTS idx_temp_tables_created_at 
-                ON temp_tables_registry(created_at);
+                CREATE INDEX IF NOT EXISTS idx_temp_tables_created_at
+                ON bronze.temp_tables_registry(created_at);
             """
-        )
-        self.logger.info("Successfully initialized all infrastructure tables")
+            )
+            self._initialized = True
+            self.logger.info(
+                "Successfully initialized all infrastructure tables in bronze schema"
+            )

@@ -36,7 +36,7 @@ class MetricsTracker:
         async with ConnectionManager.get_pool().acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO pipeline_metrics (
+                INSERT INTO bronze.pipeline_metrics (
                     file_name, table_name, batch_id, start_time, end_time,
                     processing_status, rows_processed, rows_inserted,
                     rows_updated, rows_failed, file_size_bytes,
@@ -70,7 +70,7 @@ class MetricsTracker:
                     SUM(rows_failed) as total_rows_failed,
                     COUNT(CASE WHEN processing_status = 'COMPLETED' THEN 1 END) as successful_loads,
                     COUNT(CASE WHEN processing_status = 'FAILED' THEN 1 END) as failed_loads
-                FROM pipeline_metrics
+                FROM bronze.pipeline_metrics
                 WHERE ($1::text IS NULL OR table_name = $1)
             """
             result = await conn.fetchrow(query, table_name)

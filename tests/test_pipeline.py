@@ -21,6 +21,17 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
     current_view = None
 
     try:
+        # Initialize pipeline first
+        config = Config()
+        config.PG_HOST = test_config["postgres"]["host"]
+        config.PG_PORT = test_config["postgres"]["port"]
+        config.PG_USER = test_config["postgres"]["user"]
+        config.PG_PASSWORD = test_config["postgres"]["password"]
+        config.PG_DATABASE = test_config["postgres"]["database"]
+
+        pipeline = Pipeline(config)
+        await pipeline.initialize()  # Ensure this is called before any operations
+
         # Read and compress the local CSV file
         df = pl.read_csv(local_csv_path)
         total_csv_rows = len(df)
@@ -70,20 +81,26 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
         )
 
         # Define tables after we have batch_id
-        temp_table = f"temp_{target_table}_{batch_id.replace('-', '_')}"
-        current_view = f"stg_{target_table}_current"  # Add this line
+        temp_table = f"bronze.temp_{target_table}_{batch_id.replace('-', '_')}"
+        current_view = f"bronze.stg_{target_table}_current"
 
         # Verify results
         async with pg_pool.acquire() as conn:
+            # Check if temp table exists - fixed query to include schema check
+            # Get just the table name part
+            table_name = temp_table.split('.')[-1]
+            schema_name = temp_table.split('.')[0]  # Get the schema name part
             # Check if temp table exists
             temp_table_exists = await conn.fetchval(
                 """
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables
-                    WHERE table_name = $1
-                )
-                """,
-                temp_table,
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables
+                            WHERE table_schema = $1
+                            AND table_name = $2
+                        )
+                        """,
+                schema_name,
+                table_name,
             )
             assert temp_table_exists, f"Temp table {
                 temp_table} was not created"
@@ -117,7 +134,7 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
             processed_file = await conn.fetchrow(
                 """
                 SELECT status, rows_processed, error_message
-                FROM processed_files
+                FROM bronze.processed_files
                 WHERE batch_id = $1
                 """,
                 batch_id,
@@ -138,7 +155,7 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
                     rows_processed,
                     processing_status,
                     load_duration_seconds
-                FROM pipeline_metrics
+                FROM bronze.pipeline_metrics
                 WHERE batch_id = $1
                 """,
                 batch_id,
@@ -162,11 +179,14 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
             # Verify data types
             column_types = await conn.fetch(
                 """
-                SELECT column_name, data_type
-                FROM information_schema.columns
-                WHERE table_name = $1
-                """,
-                temp_table,
+                        SELECT EXISTS (
+                            SELECT FROM information_schema.tables
+                            WHERE table_schema = $1
+                            AND table_name = $2
+                        )
+                        """,
+                schema_name,
+                table_name,
             )
             assert len(column_types) > 0, "No columns found in temp table"
 

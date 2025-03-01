@@ -6,6 +6,7 @@ from typing import List
 from src.client.s3_client import S3Client
 from src.config import Config
 from src.connection_manager import ConnectionManager
+from src.infrastructure.table_manager import TableManager
 from src.loader.data_load import DataLoader
 from src.logger import setup_logger
 from src.metrics.pipeline_metrics import MetricsTracker, PipelineMetrics
@@ -23,11 +24,27 @@ from .components.recovery_coordinator import RecoveryCoordinator
 
 
 class Pipeline:
+    _instance = None
+    _lock = asyncio.Lock()
+
+    def __new__(cls, config: Config):
+        if cls._instance is None:
+            cls._instance = super(Pipeline, cls).__new__(cls)
+            cls._instance._initialized = False
+        return cls._instance
+
     def __init__(self, config: Config):
-        self.config = config
+        # Only initialize if not already initialized
+        if hasattr(self, "_config"):
+            return
+
+        self._config = config
         self.logger = setup_logger("pipeline")
         self._initialized = False
+
+        # Initialize infrastructure manager once
         self.infrastructure_manager = InfrastructureManager()
+        self.table_manager = TableManager()
         self.cleanup_task = None
 
         # Initialize connection management
@@ -45,7 +62,6 @@ class Pipeline:
 
         # Initialize components
         self.s3_client = S3Client(config)
-        self.schema_inferrer = SchemaInferrer()
         self.metadata_tracker = MetadataTracker()
         self.recovery_manager = RecoveryManager()
         self.metrics_tracker = MetricsTracker()
@@ -56,9 +72,8 @@ class Pipeline:
             config=config,
             metadata_tracker=self.metadata_tracker,
             recovery_manager=self.recovery_manager,
+            table_manager=self.table_manager,
         )
-        # Set data_loader in metadata_tracker
-        self.metadata_tracker.set_data_loader(self.data_loader)
 
         self.recovery_worker = RecoveryWorker(
             config, self.recovery_manager, self.data_loader
@@ -74,32 +89,33 @@ class Pipeline:
 
     async def initialize(self):
         """Initialize the pipeline and its components"""
-        if self._initialized:
-            return
+        async with self._lock:
+            if self._initialized:
+                return
 
-        # Initialize central connection pool
-        await ConnectionManager.initialize(self.conn_params)
-        self.report_generator = LoadReportGenerator()
+            # Initialize central connection pool
+            await ConnectionManager.initialize(self.conn_params)
+            self.report_generator = LoadReportGenerator()
 
-        # Initialize infrastructure
-        async with ConnectionManager.get_pool().acquire() as conn:
-            await self.infrastructure_manager.initialize_infrastructure_tables(conn)
+            # Initialize infrastructure
+            async with ConnectionManager.get_pool().acquire() as conn:
+                await self.infrastructure_manager.initialize_infrastructure_tables(conn)
 
-        # Initialize components
-        await self.data_loader.initialize()
-        await self.metadata_tracker.initialize()
-        await self.recovery_manager.initialize()
-        await self.metrics_tracker.initialize()
-        await self.report_generator.initialize()
+            # Initialize components
+            await self.data_loader.initialize()
+            await self.metadata_tracker.initialize()
+            await self.recovery_manager.initialize()
+            await self.metrics_tracker.initialize()
+            await self.report_generator.initialize()
 
-        # Start recovery process
-        await self.recovery_coordinator.start_recovery()
+            # Start recovery process
+            await self.recovery_coordinator.start_recovery()
 
-        # Start cleanup task
-        self.cleanup_task = asyncio.create_task(self._periodic_cleanup())
+            # Start cleanup task
+            self.cleanup_task = asyncio.create_task(self._periodic_cleanup())
 
-        self._initialized = True
-        self.logger.info("Pipeline initialization completed successfully")
+            self._initialized = True
+            self.logger.info("Pipeline initialization completed successfully")
 
     async def _periodic_cleanup(self):
         """Run periodic cleanup of temp tables"""
@@ -178,7 +194,11 @@ class Pipeline:
         """Process a single file and load into temp table"""
         batch_id = str(uuid.uuid4())
         table_name = target_table or self._get_table_name(file_name)
-        csv_df, file_hash, schema = await self.file_processor.process_file(file_name)
+
+        # Pass table_name to file_processor
+        csv_df, file_hash, schema = await self.file_processor.process_file(
+            file_name, table_name
+        )
 
         metrics = PipelineMetrics(
             file_name=file_name,
@@ -190,8 +210,7 @@ class Pipeline:
         try:
             # Check for duplicate processing
             if await self.file_tracker.is_file_processed(file_name, file_hash):
-                self.logger.info(
-                    f"File {file_name} already processed, skipping")
+                self.logger.info(f"File {file_name} already processed, skipping")
                 return batch_id
 
             # Load the data into temp table
@@ -203,7 +222,6 @@ class Pipeline:
                 file_name,
                 batch_id,
                 metrics,
-                schema,
             )
 
             # Mark file as successfully processed
@@ -267,8 +285,7 @@ class Pipeline:
             )
 
             # If there are failed batches, log their errors
-            failed_batches = [b for b in status["batches"]
-                              if b["status"] == "FAILED"]
+            failed_batches = [b for b in status["batches"] if b["status"] == "FAILED"]
             for batch in failed_batches:
                 self.logger.error(
                     f"Batch {batch['batch_number']} failed: {

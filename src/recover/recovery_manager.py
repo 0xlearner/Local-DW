@@ -27,7 +27,7 @@ class RecoveryManager:
         async with ConnectionManager.get_pool().acquire() as conn:
             await conn.execute(
                 """
-                INSERT INTO recovery_points (
+                INSERT INTO bronze.recovery_points (
                     table_name, file_name, batch_id, checkpoint_data, status
                 ) VALUES ($1, $2, $3, $4, $5)
                 """,
@@ -69,7 +69,7 @@ class RecoveryManager:
                 param_count += 1
 
             query = f"""
-                UPDATE recovery_points
+                UPDATE bronze.recovery_points
                 SET {', '.join(update_fields)}
                 WHERE batch_id = $1
             """
@@ -81,7 +81,7 @@ class RecoveryManager:
         async with ConnectionManager.get_pool().acquire() as conn:
             return await conn.fetch(
                 """
-                SELECT * FROM recovery_points
+                SELECT * FROM bronze.recovery_points
                 WHERE status = 'PENDING'
                 OR (status = 'FAILED'
                     AND retry_count < 3
@@ -97,7 +97,7 @@ class RecoveryManager:
         async with ConnectionManager.get_pool().acquire() as conn:
             result = await conn.execute(
                 """
-                DELETE FROM recovery_points
+                DELETE FROM bronze.recovery_points
                 WHERE (status = 'COMPLETED'
                     AND created_at < CURRENT_TIMESTAMP - interval '1 day' * $1)
                 OR (status = 'FAILED'
@@ -128,7 +128,7 @@ class RecoveryManager:
             async with ConnectionManager.get_pool().acquire() as conn:
                 await conn.execute(
                     """
-                    INSERT INTO recovery_points (
+                    INSERT INTO bronze.recovery_points (
                         table_name,
                         file_name,
                         batch_id,
@@ -140,10 +140,10 @@ class RecoveryManager:
                     ON CONFLICT (table_name, file_name, batch_id)
                     DO UPDATE SET
                         last_error = EXCLUDED.last_error,
-                        retry_count = recovery_points.retry_count + 1,
+                        retry_count = bronze.recovery_points.retry_count + 1,
                         status = 'FAILED',
                         next_retry_at = CASE
-                            WHEN recovery_points.retry_count >= $8 THEN NULL
+                            WHEN bronze.recovery_points.retry_count >= $8 THEN NULL
                             ELSE CURRENT_TIMESTAMP + interval '5 minutes'
                         END
                     """,
@@ -176,7 +176,7 @@ class RecoveryManager:
             failed_jobs = await conn.fetch(
                 """
                     SELECT *
-                    FROM recovery_points
+                    FROM bronze.recovery_points
                     WHERE status = 'FAILED'
                     AND retry_count < $1
                     AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
