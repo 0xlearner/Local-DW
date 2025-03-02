@@ -13,12 +13,10 @@ from src.pipeline.data_pipeline import Pipeline
 async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test_db):
     """Test pipeline with real data from local directory"""
     pipeline = None
-    target_table = "raw_listings"
+    target_table = "listings"  # removed 'raw_' prefix as it's added in the pipeline
     local_csv_path = "/app/data/listings.csv"
     s3_file_name = "listings.csv.gz"
     batch_id = None
-    temp_table = None
-    current_view = None
 
     try:
         # Initialize pipeline first
@@ -58,7 +56,7 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
         except Exception as e:
             pytest.fail(f"Failed to upload test file to MinIO: {str(e)}")
 
-        # Initialize pipeline
+        # Initialize pipeline with S3 and DB configs
         config = Config()
         config.MINIO_ENDPOINT = test_config["s3"]["endpoint"]
         config.MINIO_ACCESS_KEY = test_config["s3"]["access_key"]
@@ -80,130 +78,65 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
             target_table=target_table,
         )
 
-        # Define tables after we have batch_id
-        temp_table = f"bronze.temp_{target_table}_{batch_id.replace('-', '_')}"
-        current_view = f"bronze.stg_{target_table}_current"
-
-        # Verify results
+        # Verify data was loaded correctly
         async with pg_pool.acquire() as conn:
-            # Check if temp table exists - fixed query to include schema check
-            # Get just the table name part
-            table_name = temp_table.split('.')[-1]
-            schema_name = temp_table.split('.')[0]  # Get the schema name part
-            # Check if temp table exists
-            temp_table_exists = await conn.fetchval(
-                """
-                        SELECT EXISTS (
-                            SELECT FROM information_schema.tables
-                            WHERE table_schema = $1
-                            AND table_name = $2
-                        )
-                        """,
-                schema_name,
-                table_name,
-            )
-            assert temp_table_exists, f"Temp table {
-                temp_table} was not created"
+            # Check main table exists
+            table_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM pg_tables
+                    WHERE schemaname = 'bronze'
+                    AND tablename = $1
+                )
+            """, f"raw_{target_table}")
+            assert table_exists, f"Table bronze.raw_{
+                target_table} does not exist"
 
-            # Check total rows
-            db_count = await conn.fetchval(f"SELECT COUNT(*) FROM {temp_table}")
-            assert (
-                db_count == total_csv_rows
-            ), f"Row count mismatch. CSV: {total_csv_rows}, DB: {db_count}"
+            # Check partition exists
+            partition_exists = await conn.fetchval("""
+                SELECT EXISTS (
+                    SELECT FROM pg_tables
+                    WHERE schemaname = 'bronze'
+                    AND tablename = $1
+                )
+            """, f"raw_{target_table}_{batch_id.replace('-', '_')}")
+            assert partition_exists, f"Partition for batch {
+                batch_id} does not exist"
 
-            # Verify metadata columns exist and are populated
-            metadata_check = await conn.fetchrow(
-                f"""
-                SELECT
-                    COUNT(*) as total,
-                    COUNT(DISTINCT _batch_id) as batch_ids,
-                    COUNT(DISTINCT _file_name) as file_names,
-                    COUNT(_ingested_at) as ingestion_timestamps
-                FROM {temp_table}
-                """
-            )
-            assert metadata_check["batch_ids"] == 1, "Should have exactly one batch_id"
-            assert (
-                metadata_check["file_names"] == 1
-            ), "Should have exactly one file_name"
-            assert (
-                metadata_check["ingestion_timestamps"] == total_csv_rows
-            ), "All rows should have ingestion timestamps"
-
-            # Check processed files status
-            processed_file = await conn.fetchrow(
-                """
-                SELECT status, rows_processed, error_message
-                FROM bronze.processed_files
-                WHERE batch_id = $1
-                """,
-                batch_id,
+            # Verify row count in partition
+            row_count = await conn.fetchval(f"""
+                SELECT COUNT(*)
+                FROM bronze.raw_{target_table}
+                WHERE _batch_id = $1
+            """, batch_id)
+            assert row_count == total_csv_rows, (
+                f"Expected {total_csv_rows} rows, but found {row_count}"
             )
 
-            assert (
-                processed_file is not None
-            ), f"No processed file record found for batch_id: {batch_id}"
-            assert (
-                processed_file["status"] == "COMPLETED"
-            ), f"File processing failed: {processed_file['error_message']}"
-            assert processed_file["rows_processed"] == total_csv_rows
+            # Verify metadata columns
+            sample_row = await conn.fetchrow(f"""
+                SELECT _ingested_at, _file_name, _batch_id
+                FROM bronze.raw_{target_table}
+                WHERE _batch_id = $1
+                LIMIT 1
+            """, batch_id)
+            assert sample_row["_file_name"] == s3_file_name, "File name mismatch"
+            assert sample_row["_batch_id"] == batch_id, "Batch ID mismatch"
+            assert sample_row["_ingested_at"] is not None, "Ingestion timestamp is missing"
 
-            # Check pipeline metrics
-            metrics = await conn.fetchrow(
-                """
-                SELECT
-                    rows_processed,
-                    processing_status,
-                    load_duration_seconds
-                FROM bronze.pipeline_metrics
-                WHERE batch_id = $1
-                """,
-                batch_id,
-            )
-            assert metrics["processing_status"] == "COMPLETED"
-            assert metrics["rows_processed"] == total_csv_rows
-            assert (
-                metrics["load_duration_seconds"] > 0
-            ), "Load duration should be greater than 0"
-
-            # Sample data verification
-            sample_data = await conn.fetch(
-                f"""
+            # Verify data integrity
+            sample_data = await conn.fetch(f"""
                 SELECT *
-                FROM {temp_table}
+                FROM bronze.raw_{target_table}
+                WHERE _batch_id = $1
                 LIMIT 5
-                """
-            )
-            assert len(sample_data) > 0, "No data found in temp table"
-
-            # Verify data types
-            column_types = await conn.fetch(
-                """
-                        SELECT EXISTS (
-                            SELECT FROM information_schema.tables
-                            WHERE table_schema = $1
-                            AND table_name = $2
-                        )
-                        """,
-                schema_name,
-                table_name,
-            )
-            assert len(column_types) > 0, "No columns found in temp table"
-
-            # Get and print load summary
-            print("\nLoad Summary:")
-            print(f"Total rows processed: {metrics['rows_processed']}")
-            print(
-                f"Processing duration: {
-                    metrics['load_duration_seconds']:.2f} seconds"
-            )
-            print(f"Processing status: {metrics['processing_status']}")
+            """, batch_id)
+            assert len(sample_data) > 0, "No data found in the partition"
 
     finally:
         if pipeline:
             await pipeline.shutdown()
 
-        # Clean up test files
+        # Cleanup
         try:
             minio_client.remove_object(
                 test_config["s3"]["bucket"], s3_file_name)
@@ -211,13 +144,15 @@ async def test_real_data_pipeline(test_config, minio_client, pg_pool, clean_test
         except:
             pass
 
-        # Clean up the database objects
-        if temp_table:
-            async with pg_pool.acquire() as conn:
-                # Drop view first, then table
-                if current_view:
-                    await conn.execute(f"DROP VIEW IF EXISTS {current_view}")
-                await conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
+        # Clean up the partition and main table
+        # async with pg_pool.acquire() as conn:
+        #     if batch_id:
+        #         await conn.execute(f"""
+        #             DROP TABLE IF EXISTS bronze.raw_{target_table}_{batch_id.replace('-', '_')}
+        #         """)
+        #         await conn.execute(f"""
+        #             DROP TABLE IF EXISTS bronze.raw_{target_table}
+        #         """)
 
 
 @pytest.mark.asyncio

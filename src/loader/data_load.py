@@ -48,12 +48,11 @@ class DataLoader:
         batch_id: str,
         file_name: str,
     ) -> int:
-        """Bulk load data into a temp table using COPY command"""
+        """Bulk load data into a partitioned table using COPY command"""
         # Handle null and NaN values separately for numeric and non-numeric columns
         expressions = []
         for col in df.columns:
             if df.schema[col].is_numeric():
-                # For numeric columns, handle both null and NaN
                 expr = (
                     pl.when(pl.col(col).is_null() | pl.col(col).is_nan())
                     .then(None)
@@ -61,7 +60,6 @@ class DataLoader:
                     .alias(col)
                 )
             else:
-                # For non-numeric columns, only handle null
                 expr = (
                     pl.when(pl.col(col).is_null())
                     .then(None)
@@ -72,15 +70,18 @@ class DataLoader:
 
         df = df.with_columns(expressions)
 
-        temp_table = f"bronze.temp_{table_name}_{batch_id.replace('-', '_')}"
-        current_view = f"bronze.stg_{table_name}_current"
+        # Main table name (no batch_id suffix)
+        main_table = f"bronze.raw_{table_name}"
 
         async with ConnectionManager.get_pool().acquire() as conn:
             try:
+                # Get or create schema
                 schema = await self.metadata_tracker.get_table_schema(table_name)
                 if not schema:
                     schema = {
-                        col: self.schema_inferrer.infer_pg_type(df[col].dtype) for col in df.columns
+                        col: self.schema_inferrer.infer_pg_type(
+                            df[col].dtype)
+                        for col in df.columns
                     }
 
                 # Add metadata columns to schema
@@ -92,17 +93,22 @@ class DataLoader:
                     }
                 )
 
-                # Create the table and get the table name without schema
-                table = await self.table_manager.create_table(conn, temp_table, schema)
+                # Create the main partitioned table if it doesn't exist
+                await self.table_manager.create_table(conn, main_table, schema)
 
-                # Register temp table
+                # Create partition for this batch
+                await self.table_manager.create_partition(conn, main_table, batch_id)
+
+                # Register batch
                 await conn.execute(
                     """
-                    INSERT INTO bronze.temp_tables_registry
-                    (table_name, original_table, batch_id)
-                    VALUES ($1, $2, $3)
-                    """,
-                    temp_table,
+                        INSERT INTO bronze.tables_registry
+                        (table_name, original_table, batch_id)
+                        VALUES ($1, $2, $3)
+                        ON CONFLICT (table_name, batch_id)
+                        DO UPDATE SET last_accessed_at = CURRENT_TIMESTAMP
+                        """,
+                    main_table,
                     table_name,
                     batch_id,
                 )
@@ -124,10 +130,10 @@ class DataLoader:
                     async with conn.transaction():
                         for i in range(0, len(df), CHUNK_SIZE):
                             chunk = df.slice(i, CHUNK_SIZE)
-                            # Convert chunk to list of tuples for copy_records_to_table
                             records = chunk.rows()
                             await conn.copy_records_to_table(
-                                table,
+                                # table name without schema
+                                f"raw_{table_name}",
                                 schema_name='bronze',
                                 records=records,
                                 columns=df.columns
@@ -136,48 +142,61 @@ class DataLoader:
 
                     self.logger.info(
                         f"Successfully loaded {
-                            total_rows} records into {temp_table}"
+                            total_rows} records into {main_table} "
+                        f"partition for batch {batch_id}"
                     )
 
-                    await self.table_manager.create_view(
-                        conn, current_view, temp_table, batch_id
-                    )
-
-                    view_count = await conn.fetchval(
+                    # Get count from the partition
+                    partition_count = await conn.fetchval(
                         f"""
-                        SELECT COUNT(*) FROM {current_view}
-                    """
+                        SELECT COUNT(*)
+                        FROM {main_table}
+                        WHERE _batch_id = $1
+                        """,
+                        batch_id
                     )
 
                     self.logger.info(
-                        f"Successfully created view {current_view} with {
-                            view_count} records from {temp_table}"
+                        f"Verified {partition_count} records in partition for batch {
+                            batch_id}"
                     )
                     return total_rows
 
                 except Exception as e:
                     self.logger.error(f"Bulk copy failed: {str(e)}")
-                    await conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
+                    # Drop the partition on failure
+                    await conn.execute(
+                        f"""
+                        DROP TABLE IF EXISTS {main_table}_{batch_id.replace('-', '_')}
+                        """
+                    )
                     await conn.execute(
                         """
-                        UPDATE bronze.temp_tables_registry
-                        SET status = 'FAILED'
-                        WHERE table_name = $1
-                        """,
-                        temp_table,
+                            UPDATE bronze.temp_tables_registry
+                            SET status = 'FAILED'
+                            WHERE table_name = $1 AND batch_id = $2
+                            """,
+                        main_table,
+                        batch_id,
                     )
                     raise
 
             except Exception as e:
                 self.logger.error(f"Error during bulk load: {str(e)}")
-                await conn.execute(f"DROP TABLE IF EXISTS {temp_table}")
+                # Drop the partition on failure
+                await conn.execute(
+                    f"""
+                    DROP TABLE IF EXISTS {main_table}_{batch_id.replace('-', '_')}
+                    """
+                )
                 await conn.execute(
                     """
-                    UPDATE bronze.temp_tables_registry
-                    SET status = 'FAILED'
-                    WHERE table_name = $1
-                    """,
-                    temp_table,
+                        UPDATE bronze.tables_registry
+                        SET status = 'FAILED'
+                        WHERE table_name = $1 AND batch_id = $2
+                        """,
+                    main_table,
+                    batch_id,
                 )
                 raise
 

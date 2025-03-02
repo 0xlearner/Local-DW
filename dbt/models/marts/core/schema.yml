@@ -1,0 +1,26 @@
+version: 2
+
+models:
+  - name: dim_listings
+    description: Listings dimension table with SCD Type 2
+    columns:
+      - name: listing_sk
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_hosts
+    description: Hosts dimension table
+    columns:
+      - name: host_id
+        tests:
+          - unique
+          - not_null
+
+  - name: fct_bookings
+    description: Bookings fact table
+    columns:
+      - name: booking_id
+        tests:
+          - unique
+          - not_null

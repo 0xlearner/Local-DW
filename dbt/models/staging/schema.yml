@@ -1,8 +1,78 @@
 version: 2
 
 sources:
-  - name: bronze # This is your database schema name
-    database: warehouse_db # Replace with your actual database name
-    schema: bronze # Using public schema
+  - name: bronze
+    database: warehouse_db
+    schema: bronze
     tables:
-      - name: stg_raw_listings_current
+      - name: raw_listings
+        identifier: raw_listings
+        loaded_at_field: _ingested_at
+        description: Raw listings data loaded from source files
+        columns:
+          - name: id
+            description: Primary key for the listing
+            tests:
+              - unique
+              - not_null
+          - name: host_id
+            description: ID of the host
+            tests:
+              - not_null
+          - name: price
+            description: Price per night in local currency
+            tests:
+              - not_null
+              - dbt_utils.positive_value
+
+models:
+  - name: stg_listings
+    description: Cleaned and standardized listings data from raw source
+    columns:
+      - name: listing_id
+        description: Primary key for the listing
+        tests:
+          - unique
+          - not_null
+
+      - name: host_id
+        description: ID of the host
+        tests:
+          - not_null
+
+      - name: listing_name
+        description: Name/title of the listing
+        tests:
+          - not_null
+
+      - name: price
+        description: Standardized price per night in decimal format
+        tests:
+          - not_null
+          - dbt_utils.positive_value
+
+      - name: data_quality_check
+        description: Quality check status for the record
+        tests:
+          - accepted_values:
+              values:
+                [
+                  "valid",
+                  "missing_listing_id",
+                  "missing_listing_name",
+                  "missing_price",
+                  "negative_price",
+                  "invalid_accommodates",
+                  "negative_minimum_nights",
+                  "invalid_maximum_nights",
+                ]
+
+      - name: record_hash
+        description: MD5 hash for change detection
+        tests:
+          - not_null
+
+      - name: _dbt_loaded_at
+        description: Timestamp when the record was loaded by dbt
+        tests:
+          - not_null

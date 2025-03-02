@@ -17,8 +17,24 @@ clean-targets:
 
 models:
   s3_postgres_pipeline:
+    # Bronze/Raw layer (staging)
     staging:
       +materialized: view
-    warehouse:
+      +schema: bronze_stage
+      +tags: ["staging", "bronze"]
+
+    # Silver layer (intermediate)
+    intermediate:
       +materialized: incremental
-      +schema: warehouse
+      +schema: silver
+      +tags: ["intermediate", "silver"]
+
+    # Gold layer (marts)
+    marts:
+      +materialized: table
+      +schema: gold
+      +tags: ["marts", "gold"]
+      core:
+        +schema: gold_core
+      analytics:
+        +schema: gold_analytics

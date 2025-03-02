@@ -16,23 +16,23 @@ class TableManager:
             f"\"{col_name}\" {col_type}" for col_name, col_type in schema.items()
         )
 
-        # Create the table with explicit schema
+        # Create the partitioned table with explicit schema
         sql = f"""
         CREATE TABLE IF NOT EXISTS {schema_name}.{table} (
             {columns_sql}
-        )
+        ) PARTITION BY LIST (_batch_id)
         """
         await conn.execute(sql)
 
         # Verify table creation
         exists = await conn.fetchval(
             """
-            SELECT EXISTS (
-                SELECT FROM pg_tables
-                WHERE schemaname = $1
-                AND tablename = $2
-            )
-            """,
+                SELECT EXISTS (
+                    SELECT FROM pg_tables
+                    WHERE schemaname = $1
+                    AND tablename = $2
+                )
+                """,
             schema_name,
             table
         )
@@ -41,44 +41,23 @@ class TableManager:
             raise RuntimeError(f"Failed to create table {table_name}")
 
         self.logger.info(f"Successfully created table {table_name}")
-        return table  # Return the table name without schema for copy_records_to_table
+        return table
 
-    async def create_view(
-        self, conn: asyncpg.Connection, view_name: str, source_table: str, batch_id: str
+    async def create_partition(
+        self,
+        conn: asyncpg.Connection,
+        table_name: str,
+        batch_id: str
     ) -> None:
-        """Create or replace view after dropping if exists"""
-        schema_name, view = view_name.split('.')
+        """Create a partition for a specific batch_id"""
+        schema_name, table = table_name.split('.')
+        partition_name = f"{table}_{batch_id.replace('-', '_')}"
 
-        # First drop the view if it exists
-        drop_view_sql = f"""
-            DROP VIEW IF EXISTS {schema_name}.{view} CASCADE
+        sql = f"""
+        CREATE TABLE IF NOT EXISTS {schema_name}.{partition_name}
+        PARTITION OF {schema_name}.{table}
+        FOR VALUES IN ('{batch_id}')
         """
-        await conn.execute(drop_view_sql)
-
-        # Then create the new view - note we're directly interpolating batch_id since parameters
-        # aren't supported in CREATE VIEW statements
-        create_view_sql = f"""
-            CREATE VIEW {schema_name}.{view} AS
-            SELECT * FROM {source_table}
-            WHERE _batch_id = '{batch_id}'
-        """
-
-        await conn.execute(create_view_sql)
-
-        # Verify view creation
-        exists = await conn.fetchval(
-            """
-                SELECT EXISTS (
-                    SELECT FROM pg_views
-                    WHERE schemaname = $1
-                    AND viewname = $2
-                )
-                """,
-            schema_name,
-            view
-        )
-
-        if not exists:
-            raise RuntimeError(f"Failed to create view {view_name}")
-
-        self.logger.info(f"Successfully created view {view_name}")
+        await conn.execute(sql)
+        self.logger.info(f"Successfully created partition {
+            schema_name}.{partition_name}")
