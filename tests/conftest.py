@@ -106,27 +106,30 @@ def compressed_csv_file(sample_csv_data, tmp_path):
 @pytest.fixture
 async def clean_test_db(test_config, pg_pool) -> AsyncGenerator[None, None]:
     """Ensure the test database is cleaned before running tests"""
-    from src.pipeline.components.infrastructure_manager import \
-        InfrastructureManager
+    from src.pipeline.components.infrastructure_manager import InfrastructureManager
 
     try:
         # First initialize infrastructure
         infrastructure_manager = InfrastructureManager()
         async with pg_pool.acquire() as conn:
+            # Create schema if it doesn't exist
+            await conn.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+
+            # Initialize infrastructure tables
             await infrastructure_manager.initialize_infrastructure_tables(conn)
 
         # Then clean existing data
         async with pg_pool.acquire() as conn:
             await conn.execute(
                 """
-                DO $$ 
+                DO $$
                 DECLARE
                     r record;
                 BEGIN
                     -- Drop all views in bronze schema
                     FOR r IN (
-                        SELECT viewname 
-                        FROM pg_views 
+                        SELECT viewname
+                        FROM pg_views
                         WHERE schemaname = 'bronze'
                     ) LOOP
                         EXECUTE 'DROP VIEW IF EXISTS bronze.' || quote_ident(r.viewname) || ' CASCADE';
@@ -134,32 +137,40 @@ async def clean_test_db(test_config, pg_pool) -> AsyncGenerator[None, None]:
 
                     -- Drop all tables in bronze schema except infrastructure tables
                     FOR r IN (
-                        SELECT tablename 
-                        FROM pg_tables 
+                        SELECT tablename
+                        FROM pg_tables
                         WHERE schemaname = 'bronze'
                         AND tablename NOT IN (
                             'table_metadata',
-                            'change_history',
                             'processed_files',
                             'pipeline_metrics',
-                            'merge_history',
                             'recovery_points',
-                            'batch_processing',
-                            'temp_tables_registry'
+                            'tables_registry'
                         )
                     ) LOOP
                         EXECUTE 'DROP TABLE IF EXISTS bronze.' || quote_ident(r.tablename) || ' CASCADE';
                     END LOOP;
 
-                    -- Truncate infrastructure tables
-                    TRUNCATE TABLE bronze.table_metadata CASCADE;
-                    TRUNCATE TABLE bronze.change_history CASCADE;
-                    TRUNCATE TABLE bronze.processed_files CASCADE;
-                    TRUNCATE TABLE bronze.pipeline_metrics CASCADE;
-                    TRUNCATE TABLE bronze.merge_history CASCADE;
-                    TRUNCATE TABLE bronze.recovery_points CASCADE;
-                    TRUNCATE TABLE bronze.batch_processing CASCADE;
-                    TRUNCATE TABLE bronze.temp_tables_registry CASCADE;
+                    -- Truncate infrastructure tables if they exist
+                    IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'bronze' AND tablename = 'table_metadata') THEN
+                        TRUNCATE TABLE bronze.table_metadata CASCADE;
+                    END IF;
+                    
+                    IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'bronze' AND tablename = 'processed_files') THEN
+                        TRUNCATE TABLE bronze.processed_files CASCADE;
+                    END IF;
+                    
+                    IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'bronze' AND tablename = 'pipeline_metrics') THEN
+                        TRUNCATE TABLE bronze.pipeline_metrics CASCADE;
+                    END IF;
+                    
+                    IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'bronze' AND tablename = 'recovery_points') THEN
+                        TRUNCATE TABLE bronze.recovery_points CASCADE;
+                    END IF;
+                    
+                    IF EXISTS (SELECT FROM pg_tables WHERE schemaname = 'bronze' AND tablename = 'tables_registry') THEN
+                        TRUNCATE TABLE bronze.tables_registry CASCADE;
+                    END IF;
                 END $$;
                 """
             )

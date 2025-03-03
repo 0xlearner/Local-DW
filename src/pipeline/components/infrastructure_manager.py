@@ -28,22 +28,109 @@ class InfrastructureManager:
                 # Create schema first
                 await conn.execute("CREATE SCHEMA IF NOT EXISTS bronze")
 
-                # Create tables_registry first as it's a dependency
-                await conn.execute("""
+                # Create tables registry
+                await conn.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS bronze.tables_registry (
                         id SERIAL PRIMARY KEY,
                         table_name TEXT NOT NULL,
                         original_table TEXT NOT NULL,
                         batch_id TEXT NOT NULL,
-                        status TEXT DEFAULT 'PENDING',
-                        last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        status TEXT DEFAULT 'ACTIVE',
                         UNIQUE(table_name, batch_id)
                     );
 
+                    CREATE INDEX IF NOT EXISTS idx_tables_registry_batch_id
+                    ON bronze.tables_registry(batch_id);
+
                     CREATE INDEX IF NOT EXISTS idx_tables_registry_status
                     ON bronze.tables_registry(status);
-                """)
+                    """
+                )
+
+                # Create table metadata tracking
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bronze.table_metadata (
+                        id SERIAL PRIMARY KEY,
+                        table_name TEXT NOT NULL,
+                        processed_at TIMESTAMP WITH TIME ZONE,
+                        total_rows INTEGER DEFAULT 0,
+                        last_file_processed TEXT,
+                        schema_snapshot JSONB,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(table_name)
+                    );
+                    """
+                )
+
+                # Create pipeline metrics tracking
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bronze.pipeline_metrics (
+                        id SERIAL PRIMARY KEY,
+                        file_name TEXT NOT NULL,
+                        table_name TEXT NOT NULL,
+                        batch_id TEXT NOT NULL,
+                        start_time TIMESTAMP WITH TIME ZONE,
+                        end_time TIMESTAMP WITH TIME ZONE,
+                        processing_status TEXT,
+                        rows_processed INTEGER DEFAULT 0,
+                        rows_inserted INTEGER DEFAULT 0,
+                        rows_updated INTEGER DEFAULT 0,
+                        rows_failed INTEGER DEFAULT 0,
+                        file_size_bytes BIGINT,
+                        error_message TEXT,
+                        load_duration_seconds FLOAT DEFAULT 0.0,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                    );
+                    """
+                )
+
+                # Create processed files tracking
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bronze.processed_files (
+                        id SERIAL PRIMARY KEY,
+                        file_name TEXT NOT NULL,
+                        file_hash TEXT,
+                        status TEXT NOT NULL,
+                        rows_processed INTEGER NOT NULL DEFAULT 0,
+                        error_message TEXT,
+                        batch_id TEXT NOT NULL,
+                        processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(file_name, file_hash)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_processed_files_batch_id
+                    ON bronze.processed_files(batch_id);
+                    """
+                )
+
+                # Create recovery points table
+                await conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS bronze.recovery_points (
+                        id SERIAL PRIMARY KEY,
+                        table_name TEXT,
+                        file_name TEXT NOT NULL,
+                        batch_id TEXT,
+                        checkpoint_data JSONB,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        status TEXT DEFAULT 'PENDING',
+                        last_error TEXT,
+                        retry_count INTEGER DEFAULT 0,
+                        next_retry_at TIMESTAMP WITH TIME ZONE,
+                        UNIQUE(file_name, batch_id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_recovery_points_status
+                    ON bronze.recovery_points(status);
+                    """
+                )
 
                 # Then verify if ALL required tables exist
                 required_tables = [
@@ -67,127 +154,6 @@ class InfrastructureManager:
                     self.logger.info(
                         "All infrastructure tables verified to exist")
                     return
-
-                # Create schema and tables in a single transaction
-                async with conn.transaction():
-                    # Create schema
-                    await conn.execute(
-                        """
-                        CREATE SCHEMA IF NOT EXISTS bronze;
-                        """
-                    )
-
-                    # Create tables registry
-                    await conn.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS bronze.tables_registry (
-                            id SERIAL PRIMARY KEY,
-                            table_name TEXT NOT NULL,
-                            original_table TEXT NOT NULL,
-                            batch_id TEXT NOT NULL,
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                            last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                            status TEXT DEFAULT 'ACTIVE',
-                            UNIQUE(table_name, batch_id)
-                        );
-
-                        CREATE INDEX IF NOT EXISTS idx_tables_registry_batch_id
-                        ON bronze.tables_registry(batch_id);
-
-                        CREATE INDEX IF NOT EXISTS idx_tables_registry_status
-                        ON bronze.tables_registry(status);
-                        """
-                    )
-
-                    # Create table metadata tracking
-                    await conn.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS bronze.table_metadata (
-                            id SERIAL PRIMARY KEY,
-                            table_name TEXT NOT NULL,
-                            processed_at TIMESTAMP WITH TIME ZONE,
-                            total_rows INTEGER DEFAULT 0,
-                            last_file_processed TEXT,
-                            schema_snapshot JSONB,
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                            UNIQUE(table_name)
-                        );
-                        """
-                    )
-
-                    # Create pipeline metrics tracking
-                    await conn.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS bronze.pipeline_metrics (
-                            id SERIAL PRIMARY KEY,
-                            file_name TEXT NOT NULL,
-                            table_name TEXT NOT NULL,
-                            batch_id TEXT NOT NULL,
-                            start_time TIMESTAMP WITH TIME ZONE,
-                            end_time TIMESTAMP WITH TIME ZONE,
-                            processing_status TEXT,
-                            rows_processed INTEGER DEFAULT 0,
-                            rows_inserted INTEGER DEFAULT 0,
-                            rows_updated INTEGER DEFAULT 0,
-                            rows_failed INTEGER DEFAULT 0,
-                            file_size_bytes BIGINT,
-                            error_message TEXT,
-                            load_duration_seconds FLOAT DEFAULT 0.0,
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                        );
-                        """
-                    )
-
-                    # Create processed files tracking
-                    await conn.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS bronze.processed_files (
-                            id SERIAL PRIMARY KEY,
-                            file_name TEXT NOT NULL,
-                            file_hash TEXT,
-                            status TEXT NOT NULL,
-                            rows_processed INTEGER NOT NULL DEFAULT 0,
-                            error_message TEXT,
-                            batch_id TEXT NOT NULL,
-                            processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                            UNIQUE(file_name, file_hash)
-                        );
-
-                        CREATE INDEX IF NOT EXISTS idx_processed_files_batch_id
-                        ON bronze.processed_files(batch_id);
-                        """
-                    )
-
-                    # Create recovery points table
-                    await conn.execute(
-                        """
-                        CREATE TABLE IF NOT EXISTS bronze.recovery_points (
-                            id SERIAL PRIMARY KEY,
-                            table_name TEXT,
-                            file_name TEXT NOT NULL,
-                            batch_id TEXT,
-                            checkpoint_data JSONB,
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                            status TEXT DEFAULT 'PENDING',
-                            last_error TEXT,
-                            retry_count INTEGER DEFAULT 0,
-                            UNIQUE(file_name, batch_id)
-                        );
-
-                        CREATE INDEX IF NOT EXISTS idx_recovery_points_status
-                        ON bronze.recovery_points(status);
-                        """
-                    )
-
-                # Verify all tables were created
-                tables_exist = await conn.fetchval("""
-                    SELECT bool_and(EXISTS (
-                        SELECT FROM information_schema.tables
-                        WHERE table_schema = 'bronze'
-                        AND table_name = ANY($1::text[])
-                    ))
-                """, required_tables)
 
                 if not tables_exist:
                     raise Exception(

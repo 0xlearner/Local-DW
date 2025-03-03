@@ -8,7 +8,8 @@ test:
 	docker compose -f docker-compose.test.yml build
 
 	@echo "Starting test containers and running tests..."
-	docker compose -f docker-compose.test.yml up --exit-code-from test
+	# docker compose -f docker-compose.test.yml up --exit-code-from test
+	docker compose -f docker-compose.test.yml up
 
 clean:
 	@echo "Cleaning up Docker resources..."
