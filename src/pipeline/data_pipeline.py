@@ -80,7 +80,6 @@ class Pipeline:
         )
 
         # Initialize pipeline-specific components
-        self.infrastructure_manager = InfrastructureManager()
         self.file_processor = FileProcessor(
             self.s3_client, self.schema_inferrer, self.data_validator
         )
@@ -93,29 +92,40 @@ class Pipeline:
             if self._initialized:
                 return
 
-            # Initialize central connection pool
-            await ConnectionManager.initialize(self.conn_params)
-            self.report_generator = LoadReportGenerator()
+            try:
+                # 1. Initialize connection pool first
+                await ConnectionManager.initialize(self.conn_params)
 
-            # Initialize infrastructure
-            async with ConnectionManager.get_pool().acquire() as conn:
-                await self.infrastructure_manager.initialize_infrastructure_tables(conn)
+                # 2. Initialize infrastructure tables
+                async with ConnectionManager.get_pool().acquire() as conn:
+                    await self.infrastructure_manager.initialize_infrastructure_tables(conn)
+                    self.logger.info(
+                        "Infrastructure tables initialized successfully")
 
-            # Initialize components
-            await self.data_loader.initialize()
-            await self.metadata_tracker.initialize()
-            await self.recovery_manager.initialize()
-            await self.metrics_tracker.initialize()
-            await self.report_generator.initialize()
+                # 3. Initialize report generator
+                self.report_generator = LoadReportGenerator()
 
-            # Start recovery process
-            await self.recovery_coordinator.start_recovery()
+                # 4. Initialize other components
+                await self.data_loader.initialize()
+                await self.metadata_tracker.initialize()
+                await self.recovery_manager.initialize()
+                await self.metrics_tracker.initialize()
+                await self.report_generator.initialize()
 
-            # Start cleanup task
-            self.cleanup_task = asyncio.create_task(self._periodic_cleanup())
+                # 5. Start recovery process
+                await self.recovery_coordinator.start_recovery()
 
-            self._initialized = True
-            self.logger.info("Pipeline initialization completed successfully")
+                # 6. Start cleanup task
+                self.cleanup_task = asyncio.create_task(
+                    self._periodic_cleanup())
+
+                self._initialized = True
+                self.logger.info(
+                    "Pipeline initialization completed successfully")
+
+            except Exception as e:
+                self.logger.error(f"Failed to initialize pipeline: {str(e)}")
+                raise
 
     async def _periodic_cleanup(self):
         """Run periodic cleanup of temp tables"""
@@ -210,7 +220,8 @@ class Pipeline:
         try:
             # Check for duplicate processing
             if await self.file_tracker.is_file_processed(file_name, file_hash):
-                self.logger.info(f"File {file_name} already processed, skipping")
+                self.logger.info(
+                    f"File {file_name} already processed, skipping")
                 return batch_id
 
             # Load the data into temp table
@@ -285,7 +296,8 @@ class Pipeline:
             )
 
             # If there are failed batches, log their errors
-            failed_batches = [b for b in status["batches"] if b["status"] == "FAILED"]
+            failed_batches = [b for b in status["batches"]
+                              if b["status"] == "FAILED"]
             for batch in failed_batches:
                 self.logger.error(
                     f"Batch {batch['batch_number']} failed: {

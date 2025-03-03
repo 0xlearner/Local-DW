@@ -1,5 +1,6 @@
 import asyncio
 import asyncpg
+from datetime import datetime, timedelta
 from src.logger import setup_logger
 
 
@@ -14,19 +15,59 @@ class InfrastructureManager:
         return cls._instance
 
     def __init__(self):
-        # Only initialize if not already initialized
         if hasattr(self, "logger"):
             return
         self.logger = setup_logger("infrastructure_manager")
         self._initialized = False
+        self.pool = None
 
     async def initialize_infrastructure_tables(self, conn: asyncpg.Connection):
         """Initialize all infrastructure tables required by the pipeline and its components"""
         async with self._lock:
-            if self._initialized:
-                return
-
             try:
+                # Create schema first
+                await conn.execute("CREATE SCHEMA IF NOT EXISTS bronze")
+
+                # Create tables_registry first as it's a dependency
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS bronze.tables_registry (
+                        id SERIAL PRIMARY KEY,
+                        table_name TEXT NOT NULL,
+                        original_table TEXT NOT NULL,
+                        batch_id TEXT NOT NULL,
+                        status TEXT DEFAULT 'PENDING',
+                        last_accessed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(table_name, batch_id)
+                    );
+
+                    CREATE INDEX IF NOT EXISTS idx_tables_registry_status
+                    ON bronze.tables_registry(status);
+                """)
+
+                # Then verify if ALL required tables exist
+                required_tables = [
+                    'tables_registry',
+                    'table_metadata',
+                    'pipeline_metrics',
+                    'processed_files',
+                    'recovery_points'
+                ]
+
+                tables_exist = await conn.fetchval("""
+                    SELECT bool_and(EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_schema = 'bronze'
+                        AND table_name = ANY($1::text[])
+                    ))
+                """, required_tables)
+
+                if tables_exist:
+                    self._initialized = True
+                    self.logger.info(
+                        "All infrastructure tables verified to exist")
+                    return
+
                 # Create schema and tables in a single transaction
                 async with conn.transaction():
                     # Create schema
@@ -75,26 +116,26 @@ class InfrastructureManager:
                         """
                     )
 
-                    # Create table metadata tracking
+                    # Create pipeline metrics tracking
                     await conn.execute(
                         """
                         CREATE TABLE IF NOT EXISTS bronze.pipeline_metrics (
-                                            id SERIAL PRIMARY KEY,
-                                            file_name TEXT NOT NULL,
-                                            table_name TEXT NOT NULL,
-                                            batch_id TEXT NOT NULL,
-                                            start_time TIMESTAMP WITH TIME ZONE,
-                                            end_time TIMESTAMP WITH TIME ZONE,
-                                            processing_status TEXT,
-                                            rows_processed INTEGER DEFAULT 0,
-                                            rows_inserted INTEGER DEFAULT 0,
-                                            rows_updated INTEGER DEFAULT 0,
-                                            rows_failed INTEGER DEFAULT 0,
-                                            file_size_bytes BIGINT,
-                                            error_message TEXT,
-                                            load_duration_seconds FLOAT DEFAULT 0.0,
-                                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-                                        );
+                            id SERIAL PRIMARY KEY,
+                            file_name TEXT NOT NULL,
+                            table_name TEXT NOT NULL,
+                            batch_id TEXT NOT NULL,
+                            start_time TIMESTAMP WITH TIME ZONE,
+                            end_time TIMESTAMP WITH TIME ZONE,
+                            processing_status TEXT,
+                            rows_processed INTEGER DEFAULT 0,
+                            rows_inserted INTEGER DEFAULT 0,
+                            rows_updated INTEGER DEFAULT 0,
+                            rows_failed INTEGER DEFAULT 0,
+                            file_size_bytes BIGINT,
+                            error_message TEXT,
+                            load_duration_seconds FLOAT DEFAULT 0.0,
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+                        );
                         """
                     )
 
@@ -102,18 +143,19 @@ class InfrastructureManager:
                     await conn.execute(
                         """
                         CREATE TABLE IF NOT EXISTS bronze.processed_files (
-                                            id SERIAL PRIMARY KEY,
-                                            file_name TEXT NOT NULL,
-                                            file_hash TEXT,
-                                            status TEXT NOT NULL,
-                                            rows_processed INTEGER NOT NULL DEFAULT 0,
-                                            error_message TEXT,
-                                            batch_id TEXT NOT NULL,
-                                            processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-                                            UNIQUE(file_name, file_hash)
-                                        );
-                                        CREATE INDEX IF NOT EXISTS idx_processed_files_batch_id
-                                        ON bronze.processed_files(batch_id);
+                            id SERIAL PRIMARY KEY,
+                            file_name TEXT NOT NULL,
+                            file_hash TEXT,
+                            status TEXT NOT NULL,
+                            rows_processed INTEGER NOT NULL DEFAULT 0,
+                            error_message TEXT,
+                            batch_id TEXT NOT NULL,
+                            processed_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(file_name, file_hash)
+                        );
+
+                        CREATE INDEX IF NOT EXISTS idx_processed_files_batch_id
+                        ON bronze.processed_files(batch_id);
                         """
                     )
 
@@ -138,6 +180,19 @@ class InfrastructureManager:
                         """
                     )
 
+                # Verify all tables were created
+                tables_exist = await conn.fetchval("""
+                    SELECT bool_and(EXISTS (
+                        SELECT FROM information_schema.tables
+                        WHERE table_schema = 'bronze'
+                        AND table_name = ANY($1::text[])
+                    ))
+                """, required_tables)
+
+                if not tables_exist:
+                    raise Exception(
+                        "Failed to verify all required tables were created")
+
                 self._initialized = True
                 self.logger.info(
                     "Successfully initialized all infrastructure tables")
@@ -146,3 +201,33 @@ class InfrastructureManager:
                 self.logger.error(
                     f"Failed to initialize infrastructure: {str(e)}")
                 raise
+
+    async def cleanup_temp_tables(self, retention_days: int = 90) -> None:
+        """Clean up temporary tables older than retention period"""
+        cutoff_date = datetime.now() - timedelta(days=retention_days)
+
+        try:
+            async with self.pool.acquire() as conn:
+                # Get list of inactive tables
+                tables = await conn.fetch(
+                    """
+                    SELECT table_name
+                    FROM bronze.tables_registry
+                    WHERE status = 'INACTIVE'
+                    AND last_accessed_at < $1
+                    """,
+                    cutoff_date
+                )
+
+                for table in tables:
+                    try:
+                        await conn.execute(
+                            f"DROP TABLE IF EXISTS {table['table_name']}")
+                        self.logger.info(
+                            f"Dropped table {table['table_name']}")
+                    except Exception as e:
+                        self.logger.error(
+                            f"Failed to drop table {table['table_name']}: {str(e)}")
+
+        except Exception as e:
+            self.logger.error(f"Error during temp table cleanup: {str(e)}")
