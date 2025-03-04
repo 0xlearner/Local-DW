@@ -1,26 +1,75 @@
 version: 2
 
 models:
-  - name: dim_listings
-    description: Listings dimension table with SCD Type 2
+  - name: dim_listings_scd
+    description: "Slowly Changing Dimension Type 2 for listings"
     columns:
       - name: listing_sk
+        description: "Surrogate key for the listing dimension"
         tests:
           - unique
           - not_null
+      - name: listing_id
+        description: "Business key for the listing"
+        tests:
+          - not_null
+      # Original columns...
+      - name: host_city
+        description: "City extracted from host_location"
+      - name: host_country
+        description: "Country extracted from host_location"
+      - name: host_since
+        description: "Date when host joined the platform"
+        tests:
+          - dbt_utils.not_null_proportion:
+              at_least: 0.5
 
-  - name: dim_hosts
-    description: Hosts dimension table
-    columns:
-      - name: host_id
-        tests:
-          - unique
-          - not_null
+  - name: dim_listings_current
+    description: >
+      Current state of all listings (Type 1 SCD).
+      Use this table for queries that only need the current state
+      of listings for better performance and simplicity.
 
-  - name: fct_bookings
-    description: Bookings fact table
+    tests:
+      - unique:
+          column_name: listing_id
+      - not_null:
+          column_name: listing_id
+
     columns:
-      - name: booking_id
+      - name: listing_id
+        description: Primary key for the listing
         tests:
-          - unique
-          - not_null
+          - unique:
+              name: "unique_listing_id_in_current_dim"
+          - not_null:
+              name: "not_null_listing_id_in_current_dim"
+
+  - name: dim_listings_type3
+    description: >
+      Type 3 SCD implementation for listings that tracks current, previous, and original values
+      for key changing attributes (price, superhost status, room type, minimum nights).
+      This model enables time-series analysis of important attribute changes.
+    columns:
+      - name: listing_id
+        description: Primary key for the listing
+        tests:
+          - unique:
+              name: "unique_listing_id_in_type3_dim"
+          - not_null:
+              name: "not_null_listing_id_in_type3_dim"
+
+      - name: current_price
+        description: Current listing price
+
+      - name: previous_price
+        description: Previous listing price before the most recent change
+
+      - name: original_price
+        description: Original listing price when first added to the system
+
+      - name: price_changed
+        description: Boolean flag indicating if price has changed from previous value
+
+      - name: price_percent_change
+        description: Percentage change between current and previous price
