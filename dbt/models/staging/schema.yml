@@ -25,6 +25,45 @@ sources:
               - not_null
               - dbt_utils.positive_value
 
+      - name: raw_reviews
+        identifier: raw_reviews
+        loaded_at_field: _ingested_at
+        description: Raw reviews data for listings
+        columns:
+          - name: id
+            description: Primary key for the review
+            tests:
+              - unique
+              - not_null
+          - name: listing_id
+            description: Foreign key to the listing
+            tests:
+              - not_null
+              - relationships:
+                  to: source('bronze', 'raw_listings')
+                  field: id
+          - name: date
+            description: Date the review was submitted
+            tests:
+              - not_null
+          - name: reviewer_id
+            description: ID of the reviewer
+          - name: reviewer_name
+            description: Name of the reviewer
+          - name: comments
+            description: Review text content
+
+      - name: raw_calendar
+        description: Daily availability and pricing for listings
+        columns:
+          - name: listing_id
+            description: Foreign key to listings
+            tests:
+              - not_null
+          - name: date
+            description: Calendar date
+            tests:
+              - not_null
 models:
   - name: stg_listings
     description: Cleaned and standardized listings data from raw source
@@ -74,5 +113,41 @@ models:
 
       - name: _dbt_loaded_at
         description: Timestamp when the record was loaded by dbt
+        tests:
+          - not_null
+
+  - name: stg_reviews
+    description: Cleaned and standardized reviews data
+    columns:
+      - name: review_id
+        description: Primary key for the review
+        tests:
+          - unique
+          - not_null
+      - name: listing_id
+        description: Foreign key to the listing
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_listings')
+              field: listing_id
+      - name: review_date
+        description: Date the review was submitted
+      - name: reviewer_id
+        description: ID of the reviewer
+      - name: reviewer_name
+        description: Name of the reviewer
+      - name: review_text
+        description: Review text content
+      - name: record_hash
+        description: MD5 hash for change detection
+
+  - name: stg_calendar
+    description: Staged calendar data with availability and pricing
+    columns:
+      - name: listing_id
+        tests:
+          - not_null
+      - name: calendar_date
         tests:
           - not_null

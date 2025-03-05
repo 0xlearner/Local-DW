@@ -48,7 +48,7 @@ WITH current_listings AS (
         record_hash,
         valid_from,
         dbt_loaded_at
-    FROM {{ ref('dim_listings_scd') }}
+    FROM {{ ref('dim_listings_scd_type2') }}
     WHERE is_current = TRUE
 )
 

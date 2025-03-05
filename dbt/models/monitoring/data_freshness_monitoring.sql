@@ -19,7 +19,7 @@ WITH freshness_metrics AS (
         sum(case when _ingested_at >= {{ current_timestamp_utc() }} - interval '24 hours' then 1 else 0 end) as fresh_records_24h,
         min(dbt_loaded_at) as warehouse_load_start,
         max(dbt_loaded_at) as warehouse_load_end
-    FROM {{ ref('dim_listings_scd') }}
+    FROM {{ ref('dim_listings_scd_type2') }}
     WHERE is_current = TRUE
     GROUP BY 1, 2, 3
 )

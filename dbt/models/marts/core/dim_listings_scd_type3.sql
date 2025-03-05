@@ -18,7 +18,7 @@
 
 WITH current_listings AS (
     SELECT *
-    FROM {{ ref('dim_listings_scd') }}
+    FROM {{ ref('dim_listings_scd_type2') }}
     WHERE is_current = TRUE
 ),
 
@@ -33,7 +33,7 @@ previous_versions AS (
         valid_from,
         valid_to,
         ROW_NUMBER() OVER (PARTITION BY listing_id ORDER BY valid_from DESC) AS version_rank
-    FROM {{ ref('dim_listings_scd') }}
+    FROM {{ ref('dim_listings_scd_type2') }}
     WHERE NOT is_current
 ),
 
@@ -60,7 +60,7 @@ original_versions AS (
         minimum_nights,
         valid_from,
         ROW_NUMBER() OVER (PARTITION BY listing_id ORDER BY valid_from ASC) AS version_rank
-    FROM {{ ref('dim_listings_scd') }}
+    FROM {{ ref('dim_listings_scd_type2') }}
 ),
 
 original_listings AS (
