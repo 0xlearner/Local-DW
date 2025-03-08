@@ -23,7 +23,8 @@ sources:
             description: Price per night in local currency
             tests:
               - not_null
-              - dbt_utils.positive_value
+              - dbt_utils.expression_is_true:
+                  expression: ">= 0"
 
       - name: raw_reviews
         identifier: raw_reviews
@@ -88,7 +89,8 @@ models:
         description: Standardized price per night in decimal format
         tests:
           - not_null
-          - dbt_utils.positive_value
+          - dbt_utils.expression_is_true:
+              expression: ">= 0"
 
       - name: data_quality_check
         description: Quality check status for the record

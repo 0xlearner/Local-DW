@@ -92,7 +92,7 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_listings_current')
+              to: ref('dim_listings_scd_type1')
               field: listing_id
       - name: simple_sentiment
         description: Basic sentiment classification based on keyword matching
@@ -129,7 +129,7 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('dim_listings_current')
+              to: ref('dim_listings_scd_type1')
               field: listing_id
 
       - name: calendar_date

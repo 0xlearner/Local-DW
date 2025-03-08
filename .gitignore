@@ -10,3 +10,5 @@ pytest.ini
 __pycache__/
 *.gz
 .env
+postgres_data
+superset_home

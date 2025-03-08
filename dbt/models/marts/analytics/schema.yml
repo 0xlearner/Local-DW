@@ -1,0 +1,458 @@
+version: 2
+
+models:
+  - name: fct_booking_economics
+    description: >
+      Comprehensive booking economics metrics including length of stay, lead time,
+      booking value, and cancellation rates. This model helps understand guest booking
+      behavior and its impact on revenue.
+    columns:
+      - name: listing_id
+        description: Foreign key to the listings dimension
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_listings_scd_type1')
+              field: listing_id
+
+      - name: avg_length_of_stay
+        description: Average Length of Stay (ALOS) in nights
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: median_length_of_stay
+        description: Median length of stay in nights
+        tests:
+          - not_null
+
+      - name: avg_booking_lead_time
+        description: Average days between booking date and check-in date
+        tests:
+          - not_null
+
+      - name: last_minute_bookings
+        description: Number of bookings made 7 days or less before check-in
+        tests:
+          - not_null
+
+      - name: short_lead_bookings
+        description: Number of bookings made 8-30 days before check-in
+        tests:
+          - not_null
+
+      - name: medium_lead_bookings
+        description: Number of bookings made 31-90 days before check-in
+        tests:
+          - not_null
+
+      - name: long_lead_bookings
+        description: Number of bookings made more than 90 days before check-in
+        tests:
+          - not_null
+
+      - name: avg_booking_value
+        description: Average total value of a booking (price × nights)
+        tests:
+          - not_null
+
+      - name: cancellation_rate
+        description: Percentage of bookings that were cancelled
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+      - name: total_bookings
+        description: Total number of bookings for this listing
+        tests:
+          - not_null
+
+      - name: total_booking_value
+        description: Total revenue from all bookings
+        tests:
+          - not_null
+
+      - name: one_night_bookings
+        description: Number of one-night bookings
+        tests:
+          - not_null
+
+      - name: two_night_bookings
+        description: Number of two-night bookings
+        tests:
+          - not_null
+
+      - name: three_to_six_night_bookings
+        description: Number of bookings lasting 3-6 nights
+        tests:
+          - not_null
+
+      - name: seven_plus_night_bookings
+        description: Number of bookings lasting 7 or more nights
+        tests:
+          - not_null
+
+      - name: one_night_revenue
+        description: Total revenue from one-night bookings
+        tests:
+          - not_null
+
+      - name: two_night_revenue
+        description: Total revenue from two-night bookings
+        tests:
+          - not_null
+
+      - name: three_to_six_night_revenue
+        description: Total revenue from bookings lasting 3-6 nights
+        tests:
+          - not_null
+
+      - name: seven_plus_night_revenue
+        description: Total revenue from bookings lasting 7 or more nights
+        tests:
+          - not_null
+
+      - name: one_night_booking_percentage
+        description: Percentage of bookings that are one night stays
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+      - name: long_stay_revenue_percentage
+        description: Percentage of revenue from long stays (7+ nights)
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+      - name: most_valuable_stay_duration
+        description: Stay duration category that generates the most revenue
+        tests:
+          - not_null
+          - accepted_values:
+              values:
+                ["1 Night", "2 Nights", "3-6 Nights", "7+ Nights", "No Revenue"]
+
+      - name: dbt_loaded_at
+        description: Timestamp when this record was loaded by dbt
+        tests:
+          - not_null
+
+  - name: fct_financial_performance_metrics
+    description: >
+      Financial and revenue metrics for listings on a monthly basis, including pricing analysis,
+      occupancy rates, and price elasticity calculations.
+    columns:
+      - name: listing_id
+        description: Foreign key to the listings dimension
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_listings_scd_type1')
+              field: listing_id
+
+      - name: month_start_date
+        description: First day of the month for these metrics
+        tests:
+          - not_null
+
+      - name: adr
+        description: Average Daily Rate - average price per booked night
+
+      - name: revpad
+        description: Revenue Per Available Day - total revenue divided by total available days
+
+      - name: weekend_pricing_premium_pct
+        description: Percentage difference between weekend and weekday rates
+
+      - name: price_elasticity
+        description: >
+          Measure of how occupancy responds to price changes. Calculated as
+          (percentage change in occupancy / percentage change in price) * -1.
+
+      - name: elasticity_category
+        description: Categorization of price elasticity (Highly Elastic, Elastic, Inelastic, etc.)
+
+      - name: seasonal_index
+        description: Ratio of current ADR to trailing 12-month average ADR
+
+      - name: seasonality
+        description: Classification of the current month as High Season, Low Season, or Regular Season
+
+      - name: seasonality_category
+        description: Categorization of seasonality (High Season, Low Season, Regular Season)
+
+  - name: fct_listing_availability_monthly
+    description: >
+      Monthly aggregation of listing availability and occupancy metrics.
+      Provides insights into booking patterns, pricing, and occupancy rates at a monthly grain.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - listing_id
+            - year_num
+            - month_num
+    columns:
+      - name: listing_id
+        description: Foreign key to the listings dimension
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_listings_scd_type1')
+              field: listing_id
+
+      - name: year_num
+        description: Calendar year
+        tests:
+          - not_null
+
+      - name: month_num
+        description: Month number (1-12)
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+              max_value: 12
+
+      - name: first_day_of_month
+        description: First day of the month (date)
+        tests:
+          - not_null
+
+      - name: total_days
+        description: Total number of days in the month that had availability data
+        tests:
+          - not_null
+
+      - name: available_days
+        description: Number of days the listing was marked as available
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: booked_days
+        description: Number of days the listing was marked as booked/unavailable
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 0
+
+      - name: avg_daily_price
+        description: Average price across all days in the month
+
+      - name: max_daily_price
+        description: Maximum daily price during the month
+
+      - name: min_daily_price
+        description: Minimum daily price during the month
+
+      - name: avg_weekend_price
+        description: Average price for weekend days (Saturday and Sunday)
+
+      - name: avg_weekday_price
+        description: Average price for weekday days (Monday through Friday)
+
+      - name: occupancy_rate
+        description: Percentage of days that were booked (booked_days / total_days * 100)
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+      - name: dbt_loaded_at
+        description: Timestamp when this record was loaded by dbt
+        tests:
+          - not_null
+
+  - name: host_performance_monthly
+    description: >
+      Monthly host performance dashboard with metrics on revenue, occupancy, and guest satisfaction.
+      Provides a comprehensive view of host activity and success metrics.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - host_id
+            - month_date
+    columns:
+      - name: host_id
+        description: Host identifier
+        tests:
+          - not_null
+
+      - name: host_name
+        description: Name of the host
+
+      - name: month_date
+        description: First day of the month being analyzed
+        tests:
+          - not_null
+
+      - name: active_listings
+        description: Number of active listings managed by the host during this month
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              min_value: 1
+
+      - name: booked_days
+        description: Total number of booked days across all of the host's listings
+        tests:
+          - not_null
+
+      - name: available_days
+        description: Total number of available (not booked) days across all listings
+        tests:
+          - not_null
+
+      - name: total_days
+        description: Total calendar days across all listings (booked + available)
+        tests:
+          - not_null
+
+      - name: occupancy_rate
+        description: Percentage of days that were booked (booked_days / total_days * 100)
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+      - name: estimated_revenue
+        description: Estimated total revenue based on price of booked days
+
+      - name: revenue_per_listing
+        description: Average revenue per active listing (estimated_revenue / active_listings)
+
+      - name: revenue_per_booked_day
+        description: Average revenue per booked day (estimated_revenue / booked_days)
+
+      - name: average_daily_rate
+        description: Average price across all listings and days
+
+      - name: review_count
+        description: Number of reviews received during this month
+
+      - name: positive_review_percentage
+        description: Percentage of reviews that were positive
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+      - name: avg_review_length
+        description: Average length of reviews in characters
+
+      - name: previous_month_revenue
+        description: Host's revenue from the previous month
+
+      - name: previous_month_occupancy
+        description: Host's occupancy rate from the previous month
+
+      - name: revenue_growth_pct
+        description: Percentage change in revenue from previous month
+
+      - name: dbt_loaded_at
+        description: Timestamp when this record was loaded by dbt
+        tests:
+          - not_null
+
+  - name: review_metrics_by_listing
+    description: >
+      Aggregated review data by listing, including review counts, sentiment analysis,
+      and key metrics to understand guest satisfaction and listing performance.
+    tests:
+      - unique:
+          column_name: listing_id
+    columns:
+      - name: listing_id
+        description: Foreign key to the listings dimension
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_listings_scd_type1')
+              field: listing_id
+
+      - name: listing_name
+        description: Name of the listing
+
+      - name: host_id
+        description: Host identifier
+        tests:
+          - not_null
+
+      - name: host_name
+        description: Name of the host
+
+      - name: neighbourhood_cleansed
+        description: Standardized neighborhood name
+
+      - name: property_type
+        description: Type of property (Apartment, House, etc.)
+
+      - name: room_type
+        description: Type of room (Entire home/apt, Private room, etc.)
+
+      - name: price
+        description: Current listing price
+
+      - name: review_count
+        description: Total number of reviews for this listing
+        tests:
+          - not_null
+
+      - name: avg_review_length
+        description: Average length of reviews in characters
+
+      - name: first_review_date
+        description: Date of the first review
+
+      - name: last_review_date
+        description: Date of the most recent review
+
+      - name: positive_reviews
+        description: Number of reviews classified as positive
+        tests:
+          - not_null
+
+      - name: negative_reviews
+        description: Number of reviews classified as negative
+        tests:
+          - not_null
+
+      - name: neutral_reviews
+        description: Number of reviews classified as neutral
+        tests:
+          - not_null
+
+      - name: positive_review_percentage
+        description: Percentage of total reviews that are positive
+        tests:
+          - dbt_utils.accepted_range:
+              min_value: 0
+              max_value: 100
+
+      - name: review_rating_category
+        description: >
+          Categorization of listing based on review sentiment
+          (Highly Rated, Well Rated, Poorly Rated, Mixed Reviews, No Reviews)
+        tests:
+          - accepted_values:
+              values:
+                [
+                  "Highly Rated",
+                  "Well Rated",
+                  "Poorly Rated",
+                  "Mixed Reviews",
+                  "No Reviews",
+                ]
+
+      - name: dbt_loaded_at
+        description: Timestamp when this record was loaded by dbt
+        tests:
+          - not_null
