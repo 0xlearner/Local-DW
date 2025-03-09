@@ -1,4 +1,4 @@
-# S3 to PostgreSQL Data Warehouse Pipeline
+# S3 to PostgreSQL Local Data Warehouse Pipeline
 
 A modern data warehouse solution for small to medium businesses, featuring automated data ingestion from S3/MinIO, transformation using dbt, and analytics dashboards with Apache Superset.
 
@@ -107,11 +107,3 @@ pytest tests/
 - **MinIO Console**: http://localhost:9001
 - **Superset**: http://localhost:8080 (default credentials: admin/secret)
 - **PostgreSQL**: localhost:5432
-
-## License
-
-[Your License]
-
-## Contributing
-
-[Contribution guidelines]
