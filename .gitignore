@@ -1,14 +1,12 @@
 .pytest_cache/
 htmlcov/
 logs/
-data/
 .coverage
 .coveragerc
 pytest.ini
 .logs/
 *.log
 __pycache__/
-*.gz
 .env
 postgres_data
 superset_home

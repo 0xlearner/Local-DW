@@ -14,7 +14,9 @@ COPY wait_for_services.py .
 COPY .coveragerc .
 COPY run_tests.sh ./run_tests.sh
 RUN chmod 755 ./run_tests.sh
-RUN ls -la ./run_tests.sh  # Verify permissions
+
+# Create necessary directories
+RUN mkdir -p /app/logs /app/data /app/reports
 
 # Set Python path
 ENV PYTHONPATH=/app

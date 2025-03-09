@@ -3,20 +3,20 @@ import uuid
 from datetime import datetime
 from typing import List
 
-from src.client.s3_client import S3Client
-from src.config import Config
-from src.connection_manager import ConnectionManager
-from src.infrastructure.table_manager import TableManager
-from src.loader.data_load import DataLoader
-from src.logger import setup_logger
-from src.metrics.pipeline_metrics import MetricsTracker, PipelineMetrics
-from src.recover.recovery_manager import RecoveryManager
-from src.recover.recovery_worker import RecoveryWorker
-from src.reporting.load_report import LoadReportGenerator
-from src.schema_inferrer.schema_infer import SchemaInferrer
-from src.tracker.file_tracker import FileTracker
-from src.tracker.metadata_tracker import MetadataTracker
-from src.validator.data_validation import DataValidator
+from ..client.s3_client import S3Client
+from ..config import Config
+from ..connection_manager import ConnectionManager
+from ..infrastructure.table_manager import TableManager
+from ..loader.data_load import DataLoader
+from ..logger import setup_logger
+from ..metrics.pipeline_metrics import MetricsTracker, PipelineMetrics
+from ..recover.recovery_manager import RecoveryManager
+from ..recover.recovery_worker import RecoveryWorker
+from ..reporting.load_report import LoadReportGenerator
+from ..schema_inferrer.schema_infer import SchemaInferrer
+from ..tracker.file_tracker import FileTracker
+from ..tracker.metadata_tracker import MetadataTracker
+from ..validator.data_validation import DataValidator
 
 from .components.file_processor import FileProcessor
 from .components.infrastructure_manager import InfrastructureManager
@@ -98,9 +98,10 @@ class Pipeline:
 
                 # 2. Initialize infrastructure tables
                 async with ConnectionManager.get_pool().acquire() as conn:
-                    await self.infrastructure_manager.initialize_infrastructure_tables(conn)
-                    self.logger.info(
-                        "Infrastructure tables initialized successfully")
+                    await self.infrastructure_manager.initialize_infrastructure_tables(
+                        conn
+                    )
+                    self.logger.info("Infrastructure tables initialized successfully")
 
                 # 3. Initialize report generator
                 self.report_generator = LoadReportGenerator()
@@ -116,12 +117,10 @@ class Pipeline:
                 await self.recovery_coordinator.start_recovery()
 
                 # 6. Start cleanup task
-                self.cleanup_task = asyncio.create_task(
-                    self._periodic_cleanup())
+                self.cleanup_task = asyncio.create_task(self._periodic_cleanup())
 
                 self._initialized = True
-                self.logger.info(
-                    "Pipeline initialization completed successfully")
+                self.logger.info("Pipeline initialization completed successfully")
 
             except Exception as e:
                 self.logger.error(f"Failed to initialize pipeline: {str(e)}")
@@ -220,8 +219,7 @@ class Pipeline:
         try:
             # Check for duplicate processing
             if await self.file_tracker.is_file_processed(file_name, file_hash):
-                self.logger.info(
-                    f"File {file_name} already processed, skipping")
+                self.logger.info(f"File {file_name} already processed, skipping")
                 return batch_id
 
             # Load the data into temp table
@@ -245,13 +243,21 @@ class Pipeline:
             )
 
             self.logger.info(
-                f"Successfully processed file {
-                    file_name} with batch_id {batch_id}"
+                f"Successfully processed file {file_name} with batch_id {batch_id}"
             )
+
             return batch_id
 
         except Exception as e:
-            await self._handle_processing_error(e, file_name, metrics, file_hash)
+            self.logger.error(f"Error processing file {file_name}: {str(e)}")
+            await self.file_tracker.mark_file_processed(
+                file_name=file_name,
+                file_hash=file_hash,
+                status="FAILED",
+                rows_processed=0,
+                batch_id=batch_id,
+                error_message=str(e),
+            )
             raise
         finally:
             metrics.end_time = datetime.now()
@@ -296,8 +302,7 @@ class Pipeline:
             )
 
             # If there are failed batches, log their errors
-            failed_batches = [b for b in status["batches"]
-                              if b["status"] == "FAILED"]
+            failed_batches = [b for b in status["batches"] if b["status"] == "FAILED"]
             for batch in failed_batches:
                 self.logger.error(
                     f"Batch {batch['batch_number']} failed: {

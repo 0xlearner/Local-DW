@@ -1,0 +1,49 @@
+{
+  "report_generated_at": "2025-03-09T17:45:29.641325",
+  "generated_by": "0xlearner",
+  "table_name": null,
+  "summary": {
+    "total_files_processed": 3,
+    "total_records_processed": 5689391,
+    "total_failures": 0,
+    "file_sizes": {
+      "max": 211524550,
+      "average": "134101278.00"
+    }
+  },
+  "operations": [
+    {
+      "file_name": "calendar/calendar.csv.gz",
+      "table_name": "calendar",
+      "batch_id": "9fc335f7-b108-4aa8-93cc-7b81a624a60d",
+      "start_time": "2025-03-09 17:42:51.036513+00:00",
+      "end_time": "2025-03-09 17:45:29.554680+00:00",
+      "processing_status": "COMPLETED",
+      "rows_processed": 5103124,
+      "file_size_bytes": 211524550,
+      "error_message": null
+    },
+    {
+      "file_name": "reviews/reviews.csv.gz",
+      "table_name": "reviews",
+      "batch_id": "16108e34-7c45-4efa-aab0-dab454b260d0",
+      "start_time": "2025-03-09 17:42:20.818097+00:00",
+      "end_time": "2025-03-09 17:42:48.838619+00:00",
+      "processing_status": "COMPLETED",
+      "rows_processed": 572283,
+      "file_size_bytes": 161239892,
+      "error_message": null
+    },
+    {
+      "file_name": "listings/listings.csv.gz",
+      "table_name": "listings",
+      "batch_id": "1f020c5e-86b8-4826-9527-09944c6e8806",
+      "start_time": "2025-03-09 17:42:12.888115+00:00",
+      "end_time": "2025-03-09 17:42:17.802189+00:00",
+      "processing_status": "COMPLETED",
+      "rows_processed": 13984,
+      "file_size_bytes": 29539392,
+      "error_message": null
+    }
+  ]
+}

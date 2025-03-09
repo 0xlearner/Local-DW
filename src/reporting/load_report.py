@@ -38,14 +38,14 @@ class LoadReportGenerator:
                 "total_failures": metrics["total_failures"] or 0,
                 "file_sizes": {
                     "max": metrics["max_file_size"] or 0,
-                    "average": round(metrics["avg_file_size"] or 0, 2)
+                    "average": round(metrics["avg_file_size"] or 0, 2),
                 },
             }
 
     async def generate_report(
         self,
         table_name: Optional[str] = None,
-        batch_ids: Optional[Union[str, List[str]]] = None
+        batch_ids: Optional[Union[str, List[str]]] = None,
     ) -> dict:
         """
         Generate a load report.
@@ -73,9 +73,6 @@ class LoadReportGenerator:
                     end_time,
                     processing_status,
                     rows_processed,
-                    rows_inserted,
-                    rows_updated,
-                    rows_failed,
                     file_size_bytes,
                     error_message
                 FROM bronze.pipeline_metrics
@@ -90,14 +87,14 @@ class LoadReportGenerator:
                 "generated_by": "0xlearner",
                 "table_name": table_name,
                 "summary": summary,
-                "operations": [dict(record) for record in metrics_records]
+                "operations": [dict(record) for record in metrics_records],
             }
 
     async def save_report(
         self,
         report_path: str,
         table_name: Optional[str] = None,
-        batch_ids: Optional[Union[str, List[str]]] = None
+        batch_ids: Optional[Union[str, List[str]]] = None,
     ) -> None:
         """
         Save load report to a file.
@@ -114,8 +111,7 @@ class LoadReportGenerator:
 
             report = await self.generate_report(table_name, batch_ids)
 
-            os.makedirs(os.path.dirname(
-                os.path.abspath(report_path)), exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
 
             with open(report_path, "w") as f:
                 json.dump(report, f, indent=2, default=str)

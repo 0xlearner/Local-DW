@@ -79,8 +79,7 @@ class DataLoader:
                 schema = await self.metadata_tracker.get_table_schema(table_name)
                 if not schema:
                     schema = {
-                        col: self.schema_inferrer.infer_pg_type(
-                            df[col].dtype)
+                        col: self.schema_inferrer.infer_pg_type(df[col].dtype)
                         for col in df.columns
                     }
 
@@ -134,9 +133,9 @@ class DataLoader:
                             await conn.copy_records_to_table(
                                 # table name without schema
                                 f"raw_{table_name}",
-                                schema_name='bronze',
+                                schema_name="bronze",
                                 records=records,
-                                columns=df.columns
+                                columns=df.columns,
                             )
                             total_rows += len(chunk)
 
@@ -153,7 +152,7 @@ class DataLoader:
                         FROM {main_table}
                         WHERE _batch_id = $1
                         """,
-                        batch_id
+                        batch_id,
                     )
 
                     self.logger.info(
@@ -230,8 +229,7 @@ class DataLoader:
             metrics.error_message = str(e)
             metrics.processing_status = "FAILED"
             self.logger.error(
-                f"Error loading data into temp table for {
-                    table_name}: {str(e)}",
+                f"Error loading data into temp table for {table_name}: {str(e)}",
                 exc_info=True,
             )
             raise

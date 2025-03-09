@@ -1,6 +1,7 @@
 services:
   postgres-test:
     image: postgres:latest
+    container_name: postgres-test
     environment:
       POSTGRES_USER: warehouse_user
       POSTGRES_PASSWORD: warehouse_password
@@ -18,6 +19,7 @@ services:
 
   minio-test:
     image: minio/minio
+    container_name: minio-test
     environment:
       MINIO_ROOT_USER: test_access_key
       MINIO_ROOT_PASSWORD: test_secret_key
@@ -36,6 +38,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.test
+    container_name: test
     depends_on:
       postgres-test:
         condition: service_healthy

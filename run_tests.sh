@@ -1,10 +1,12 @@
 #!/bin/bash
-# File: run_tests.sh
 
 set -e  # Exit immediately if a command exits with non-zero status
 
 echo "Starting services check..."
 python wait_for_services.py
+
+echo "Starting data upload to MinIO (test environment)..."
+python tests/utils/upload_to_minio_test.py
 
 echo "Running tests..."
 pytest tests/test_pipeline.py::test_real_data_pipeline -v -s --cov=src --cov-report=term-missing | tee /app/logs/test_real_data_pipeline.log
